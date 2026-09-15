@@ -1,0 +1,266 @@
+{
+  "AI4Math/MathVista": {
+    "bytes": 1754088814,
+    "dataset": "AI4Math/MathVista",
+    "error": null,
+    "gated": false
+  },
+  "AirsideLabs/pre-flight-06": {
+    "bytes": 113049,
+    "dataset": "AirsideLabs/pre-flight-06",
+    "error": null,
+    "gated": false
+  },
+  "BBEH/bbeh": {
+    "bytes": 18648915,
+    "dataset": "BBEH/bbeh",
+    "error": null,
+    "gated": false
+  },
+  "CompassioninMachineLearning/tac": {
+    "bytes": 93202,
+    "dataset": "CompassioninMachineLearning/tac",
+    "error": null,
+    "gated": true
+  },
+  "EleutherAI/drop": {
+    "bytes": 11639991,
+    "dataset": "EleutherAI/drop",
+    "error": null,
+    "gated": false
+  },
+  "Joschka/big_bench_hard": {
+    "bytes": 664854,
+    "dataset": "Joschka/big_bench_hard",
+    "error": null,
+    "gated": false
+  },
+  "MMMU/MMMU": {
+    "bytes": 3655836618,
+    "dataset": "MMMU/MMMU",
+    "error": null,
+    "gated": false
+  },
+  "Maxwell-Jia/AIME_2024": {
+    "bytes": 41426,
+    "dataset": "Maxwell-Jia/AIME_2024",
+    "error": null,
+    "gated": false
+  },
+  "McGill-NLP/stereoset": {
+    "bytes": 1303036,
+    "dataset": "McGill-NLP/stereoset",
+    "error": null,
+    "gated": false
+  },
+  "Rowan/hellaswag": {
+    "bytes": 36802065,
+    "dataset": "Rowan/hellaswag",
+    "error": null,
+    "gated": false
+  },
+  "TAUR-Lab/MuSR": {
+    "bytes": 7149329,
+    "dataset": "TAUR-Lab/MuSR",
+    "error": null,
+    "gated": false
+  },
+  "TIGER-Lab/MMLU-Pro": {
+    "bytes": 4207360,
+    "dataset": "TIGER-Lab/MMLU-Pro",
+    "error": null,
+    "gated": false
+  },
+  "ai-safety-institute/AgentHarm": {
+    "bytes": 347661,
+    "dataset": "ai-safety-institute/AgentHarm",
+    "error": null,
+    "gated": false
+  },
+  "allenai/ai2_arc": {
+    "bytes": 1222570,
+    "dataset": "allenai/ai2_arc",
+    "error": null,
+    "gated": false
+  },
+  "allenai/winogrande": {
+    "bytes": 4618916,
+    "dataset": "allenai/winogrande",
+    "error": null,
+    "gated": false
+  },
+  "ambean/lingOly": {
+    "bytes": 258790,
+    "dataset": "ambean/lingOly",
+    "error": null,
+    "gated": true
+  },
+  "cais/hle": {
+    "bytes": 274282300,
+    "dataset": "cais/hle",
+    "error": null,
+    "gated": true
+  },
+  "cais/hle-rolling": {
+    "bytes": 333277497,
+    "dataset": "cais/hle-rolling",
+    "error": null,
+    "gated": true
+  },
+  "cais/mmlu": {
+    "bytes": 270035224,
+    "dataset": "cais/mmlu",
+    "error": null,
+    "gated": false
+  },
+  "cais/wmdp": {
+    "bytes": 1408631,
+    "dataset": "cais/wmdp",
+    "error": null,
+    "gated": false
+  },
+  "craigwu/vstar_bench": {
+    "bytes": 380182437,
+    "dataset": "craigwu/vstar_bench",
+    "error": null,
+    "gated": false
+  },
+  "ehovy/race": {
+    "bytes": 83045341,
+    "dataset": "ehovy/race",
+    "error": null,
+    "gated": false
+  },
+  "flaviagiammarino/vqa-rad": {
+    "bytes": 34505256,
+    "dataset": "flaviagiammarino/vqa-rad",
+    "error": null,
+    "gated": false
+  },
+  "futurehouse/lab-bench": {
+    "bytes": 334210432,
+    "dataset": "futurehouse/lab-bench",
+    "error": null,
+    "gated": false
+  },
+  "google-research-datasets/paws": {
+    "bytes": 129296401,
+    "dataset": "google-research-datasets/paws",
+    "error": null,
+    "gated": false
+  },
+  "google/boolq": {
+    "bytes": 4950520,
+    "dataset": "google/boolq",
+    "error": null,
+    "gated": false
+  },
+  "heegyu/bbq": {
+    "bytes": 50941256,
+    "dataset": "heegyu/bbq",
+    "error": null,
+    "gated": false
+  },
+  "jablonkagroup/ChemBench": {
+    "bytes": 743760,
+    "dataset": "jablonkagroup/ChemBench",
+    "error": null,
+    "gated": false
+  },
+  "jablonkagroup/MaCBench": {
+    "bytes": 318875329,
+    "dataset": "jablonkagroup/MaCBench",
+    "error": null,
+    "gated": false
+  },
+  "jkhouja/LingOly-TOO": {
+    "bytes": 2105116,
+    "dataset": "jkhouja/LingOly-TOO",
+    "error": null,
+    "gated": false
+  },
+  "jonathan-roberts1/zerobench": {
+    "bytes": 637688498,
+    "dataset": "jonathan-roberts1/zerobench",
+    "error": null,
+    "gated": true
+  },
+  "lmms-lab-encoder/DocVQA": {
+    "bytes": 12100689020,
+    "dataset": "lmms-lab-encoder/DocVQA",
+    "error": null,
+    "gated": false
+  },
+  "math-ai/aime25": {
+    "bytes": 30508,
+    "dataset": "math-ai/aime25",
+    "error": null,
+    "gated": false
+  },
+  "math-ai/aime26": {
+    "bytes": 16488,
+    "dataset": "math-ai/aime26",
+    "error": null,
+    "gated": false
+  },
+  "matichon/thai-onet-m6-exam": {
+    "bytes": 1665174,
+    "dataset": "matichon/thai-onet-m6-exam",
+    "error": null,
+    "gated": false
+  },
+  "openai/MMMLU": {
+    "bytes": 124875074,
+    "dataset": "openai/MMMLU",
+    "error": null,
+    "gated": false
+  },
+  "openai/gsm8k": {
+    "bytes": 5900352,
+    "dataset": "openai/gsm8k",
+    "error": null,
+    "gated": false
+  },
+  "qiaojin/PubMedQA": {
+    "bytes": 300503090,
+    "dataset": "qiaojin/PubMedQA",
+    "error": null,
+    "gated": false
+  },
+  "rajpurkar/squad_v2": {
+    "bytes": 17730583,
+    "dataset": "rajpurkar/squad_v2",
+    "error": null,
+    "gated": false
+  },
+  "skylenage-ai/HLE-Verified": {
+    "bytes": 335473830,
+    "dataset": "skylenage-ai/HLE-Verified",
+    "error": null,
+    "gated": false
+  },
+  "stanford-crfm/air-bench-2024": {
+    "bytes": 5927223,
+    "dataset": "stanford-crfm/air-bench-2024",
+    "error": null,
+    "gated": false
+  },
+  "tau/commonsense_qa": {
+    "bytes": 1567139,
+    "dataset": "tau/commonsense_qa",
+    "error": null,
+    "gated": false
+  },
+  "truthfulqa/truthful_qa": {
+    "bytes": 504836,
+    "dataset": "truthfulqa/truthful_qa",
+    "error": null,
+    "gated": false
+  },
+  "zefang-liu/secqa": {
+    "bytes": 147858,
+    "dataset": "zefang-liu/secqa",
+    "error": null,
+    "gated": false
+  }
+}
