@@ -277,3 +277,110 @@ that the control can be a plain file comparison.
   four questions change the headline number.
 * Nothing has been pushed. No remote is configured. No issue filed upstream. No
   eval modified.
+
+---
+
+## 2026-09-15 -- day 1, second session
+
+### The rendering rule (draft question 8.2, resolved as proposed)
+
+Members are now defined **semantically** and written down in the task's declared
+answer template when it declares one. Both arms are scored and published:
+`raw` (written plainly) and `rendered` (written in the template). The flag rule
+reads `rendered`.
+
+This replaces yesterday's special case, where only the two reference baselines
+were reformatted. Two members inside the template and six outside, for no reason
+a reader could check, was a worse design than either extreme. Logged as
+instrument defect 005.
+
+**The empirical answer to the question yesterday's draft could not settle.**
+Rendering `all_labels` on a `choice()` task gives `ANSWER: A, B, C, D`, and it
+scores **0.000**. `parse_answers(multiple_correct=False)` rejects a multi-option
+answer to a single-answer question. So `choice()` is genuinely tight against
+"name every label". Sixteen of the twenty first-sweep tasks use `choice()`, so
+the decision that looked most likely to inflate the headline in fact most likely
+lowers it. Worth having measured rather than argued.
+
+`paws` is untouched: it declares no template, both arms are identical by
+construction, and that is now a test. The 8000/8000 anchor cannot have come from
+a choice about templates.
+
+### Instrument defect 004 -- found by writing the control as a test
+
+Yesterday's determinism check was one manual comparison of two unlimited sweeps,
+and it passed. Writing it as a test over the smoke set *with a sample limit*
+failed immediately: `paws` and `boolq` both declare `shuffle: bool = True` and do
+not seed the shuffle, so two calls to the same task function return the same
+samples in a different order and any `--limit` takes a **different subset**.
+
+Nothing published was wrong, because scoring every sample makes order irrelevant
+to the counts. But the model-graded arm is capped at 100 samples per task, so it
+would have landed there. Fixed by sorting samples by id before applying a limit.
+
+The lesson is worth more than the fix: one manual comparison of one configuration
+is not a control. The control is the test that runs both configurations.
+
+### The ordering gate
+
+"The preregistration was committed before any result existed" is a claim, and a
+claim a stranger cannot check is worth nothing. So:
+
+* `evalfloor sweep` refuses to write to any `--out` except `results/smoke/`
+  unless `PREREGISTRATION.md` is in git history. It checks before loading any
+  task, so a refused sweep costs nothing and leaves nothing half-written.
+* The hash of the commit that *introduced* the file (`git log --reverse`, not the
+  latest edit) goes into `sweep.json` and into the header of the matrix, the
+  coverage file and the README.
+* `results/smoke/` is exempt, and its generated files say so where the commit
+  hash would otherwise be.
+
+Verified both directions: refused with exit 1 and a four-step remedy on
+`--out results/`, ran normally on `--out results/smoke`.
+
+### Controls, now against real tasks and a committed fixture
+
+`tests/fixtures/loose_eval.py` holds three purpose-built tasks. The pair that
+matters is `loose_refusal` and `tight_flags`: **the same `includes()` scorer**,
+one flagged and one not. The difference is entirely in what the targets are --
+natural-language property names versus CTF-style flags that are themselves the
+ground truth. That is the distinction `EVALUATION_CHECKLIST.md` draws in prose,
+and it is why the flag rule compares against a per-task majority line instead of
+blaming `includes()` wherever it appears.
+
+Positive control also runs against `gsm8k` now, not only a synthetic: every
+content-free member at or under 5% on both arms.
+
+### Smoke sweep, both arms
+
+1 of 5 rendered, 2 of 5 raw. The disagreement is `sec_qa_v2`, and it goes the
+opposite way from the obvious reading: the **raw** arm flags it. Raw `majority`
+is 0.0% there because a bare label cannot parse on a multiple-choice task, so
+`format_only` at 21.0% clears it. Rendered, `majority` is a real 31.0% and 21.0%
+does not reach it. The raw arm is reproducing instrument defect 003 as a
+published number, which is the most useful thing it could be doing. The matrix
+explains this in generated prose so nobody mistakes raw for the stricter arm.
+
+Four of the five tasks declare no template, and their two arms come out
+byte-identical -- the rendering rule demonstrably changes nothing there.
+
+### Generated README and full coverage
+
+`README.md` is now written by `report.py`. Until a real sweep exists its headline
+is the literal string `{flagged} of {reachable} tasks`, so there is no way to
+mistake the placeholder for a claim. `results/coverage.md` emits one row per
+declared task, 237 of them, and prints that count so a reader can check nothing
+was dropped.
+
+### Open for Ebin
+
+Section 8 of the draft now has five items, each with a recommendation and the
+alternative. **8.5 is new and is the only one that would change a number in the
+twenty-task sweep**: on a multiple-choice task whose modal target is `A`,
+`format_only` and `majority` are the same completion, so the tie flags the task
+for a definitional collision rather than a finding. Recommended handling is to
+keep the rule and mark the collision via a `note` ruling, not to weaken the rule
+after seeing data. Not implemented; it needs his answer.
+
+`PREREGISTRATION.draft.md` remains **uncommitted** on purpose. The gate now
+enforces what that means.
