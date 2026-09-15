@@ -84,10 +84,17 @@ def _prereg_block(payload: dict[str, Any]) -> list[str]:
     """The preregistration commit this sweep ran under, if any."""
     commit = payload.get("preregistration_commit")
     path = payload.get("preregistration_path", "PREREGISTRATION.md")
+    if not commit and payload.get("smoke"):
+        return [
+            "> **No preregistration commit recorded.** This came from a smoke run, "
+            "which is exempt from the ordering gate and is not a result.",
+        ]
     if not commit:
         return [
-            "> **No preregistration commit recorded.** This payload came from a smoke "
-            "run, which is exempt from the ordering gate and is not a result.",
+            "> **No preregistration is committed yet, so no sweep can produce a "
+            "result.** `evalfloor sweep` refuses to write anywhere but "
+            "`results/smoke/` until `PREREGISTRATION.md` is in git history, and it "
+            "then stamps that commit hash here.",
         ]
     return [
         f"Preregistration `{path}` was committed at `{commit[:12]}` **before** this "
@@ -204,14 +211,37 @@ def render_matrix(
         "best CF rendered | flagged raw | flagged rendered |"
     )
     lines.append("|" + "---|" * 8)
+    templated_tasks = 0
+    disagreements = 0
     for f in floors_after:
         if f.error:
             continue
+        if f.answer_template != "bare":
+            templated_tasks += 1
+        if f.flagged_raw != f.flagged:
+            disagreements += 1
         lines.append(
             f"| `{f.task}` | {f.answer_template} | {_pct(f.majority_raw)} | "
             f"{_pct(f.majority)} | {f.best_member_raw or '-'} "
             f"{_pct(f.best_mean_raw)} | {f.best_member or '-'} {_pct(f.best_mean)} | "
             f"{'yes' if f.flagged_raw else 'no'} | {'yes' if f.flagged else 'no'} |"
+        )
+    lines.append("")
+    scored_tasks = len([f for f in floors_after if not f.error])
+    lines.append(
+        f"{templated_tasks} of {scored_tasks} tasks here declare an answer template. "
+        f"The two arms disagree on {disagreements}."
+    )
+    if disagreements:
+        lines.append("")
+        lines.append(
+            "**Read the disagreements the right way round.** Where the raw arm flags "
+            "and the rendered arm does not, that is not the raw arm being stricter. "
+            "It is the raw arm reproducing instrument defect 003: a reference "
+            "baseline written as a bare label cannot parse on a multiple-choice task, "
+            "so its `majority` collapses towards zero and almost anything clears it. "
+            "The rendered arm gives that task a real chance line to be measured "
+            "against. See `INSTRUMENT_LESSONS.md`."
         )
     lines.append("")
 

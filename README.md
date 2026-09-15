@@ -1,77 +1,100 @@
 # eval-floor
 
+<!-- GENERATED FILE. Do not edit by hand. Regenerate with `evalfloor report`. Every number here is computed from results/sweep.json and rulings.jsonl. -->
+
 **What score does an answer with no content in it already get?**
 
-A scorer is a function of a completion and a target. It does not care whether a
-model produced the completion. So you can feed an eval's real scorer, over its
-real dataset, a battery of completions that contain no information about the
-sample -- the empty string, a refusal, every label concatenated -- and read off
-the floor underneath the benchmark. No model is called. The sweep costs nothing
-and is deterministic, which is what makes it reproducible by anyone.
+## The number, and its denominator
 
-> **Status: week 1, day 1.** The harness, the battery and the anchoring
-> regression test exist. The sweep across the collection has not run yet, and no
-> headline number is claimed here until it has. The preregistration is committed
-> before any sweep result exists, and this README will lead with the number and
-> its denominator once there is one.
+`{flagged} of {reachable} tasks` -- **no sweep has run yet.** This line is a placeholder that `evalfloor report` fills from `results/sweep.json`. No number is claimed here until it does.
+
+> **No preregistration is committed yet, so no sweep can produce a result.** `evalfloor sweep` refuses to write anywhere but `results/smoke/` until `PREREGISTRATION.md` is in git history, and it then stamps that commit hash here.
+
+## What this is
+
+A scorer in Inspect is a function of a completion and a target. It does not care whether a model produced the completion. So eval-floor drives an eval's real scorer, over its real dataset, with a battery of completions that carry no information about the sample: the empty string, a refusal, every label concatenated. No model is called. The sweep costs nothing and is deterministic, which is what makes it reproducible by anyone.
 
 ## The case that started it
 
-Inspect Evals issue
-[#2331](https://github.com/UKGovernmentBEIS/inspect_evals/issues/2331) was opened
-on 2026-08-31 by **caiotheodoro**, who found that the constant string `"yesno"`
-scores 8000 of 8000 on the `paws` eval, because the eval is scored with
-`includes()` and both labels are substrings of the constant. That finding is
-theirs, not this project's. eval-floor generalises it: it asks the same question
-mechanically, of every task in the collection.
+Inspect Evals issue [#2331](https://github.com/UKGovernmentBEIS/inspect_evals/issues/2331) was opened on 2026-08-31 by **caiotheodoro**, who found that the constant string `"yesno"` scores 8000 of 8000 on the `paws` eval, because the eval is scored with `includes()` and both labels are substrings of that constant. **That finding is theirs, not this project's.** eval-floor generalises it, asking the same question mechanically of every task in the collection. A fix is in flight: PR [#2334](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2334) by **jkopczyn** replaces the `paws` and `boolq` scorers with anchored patterns, and a maintainer comment from **MattFisher** dated 2026-09-09 calls it "merge-ready" -- but it carries no approving GitHub review, it is **not merged**, and no release contains it. `paws` in `inspect_evals` 0.20.0, the latest release, still reads `scorer=includes()`. That is why this repository pins that version: the anchor has to run against a version where the behaviour is still present. `tests/test_paws_regression.py` reproduces it from committed code.
 
-A fix is in flight. PR
-[#2334](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2334) by
-**jkopczyn** replaces the `paws` and `boolq` scorers with anchored patterns. As of
-2026-09-15 it is open and unmerged, and no release contains it -- `paws` in
-`inspect_evals` 0.20.0, the latest release, still reads `scorer=includes()`.
-That is why this repository pins 0.20.0: the anchor test has to run against a
-version where the behaviour is still present.
+## Reachability
 
-`tests/test_paws_regression.py` reproduces it from committed code.
+The denominator comes before the result. Every declared task is either swept or excluded with a recorded reason; the full per-task table is in [`results/coverage.md`](results/coverage.md).
 
-## Install
+| reason | tasks | meaning |
+|---|---|---|
+| `sandbox_required` | 76 | the task or its scorer needs a container |
+| `extra_dependency` | 49 | needs an optional dependency group that is not installed |
+| `model_graded` | 27 | the scorer needs a grader model; not part of the deterministic arm |
+| `network_required` | 17 | fetches from a URL or clones a repository at run time |
+| `gated_dataset` | 7 | the Hugging Face dataset requires accepting terms or an access grant |
+| `too_large` | 3 | the dataset exceeds the disk cap recorded in PREREGISTRATION.md |
+| **reachable** | **58** | the deterministic sweep can run these |
+| **declared total** | **237** | |
+
+## The battery
+
+Members are defined semantically and written down in the task's own answer template when it declares one. Both arms, `raw` and `rendered`, are scored and reported, so the effect of that rendering is visible rather than assumed. The flag rule uses the rendered arm.
+
+| member | kind | semantics | templated | completion |
+|---|---|---|---|---|
+| `empty` | content_free | literal | no | the empty string |
+| `whitespace` | content_free | literal | no | a single newline |
+| `refusal` | content_free | literal | no | a short refusal sentence |
+| `all_labels` | content_free | labels | yes | every distinct target in the dataset |
+| `all_letters` | content_free | literal | no | the option letters A B C D E, bare |
+| `echo` | content_free | literal | no | the sample input, echoed back verbatim |
+| `boilerplate` | content_free | literal | no | a long fluent paragraph containing no task content |
+| `format_only` | content_free | placeholder | yes | the answer template with a placeholder |
+| `majority` | reference | label | yes | the modal target of the dataset |
+| `uniform` | reference | label | yes | a target drawn uniformly from the label set, averaged over seeds |
+
+Literal strings, fixed by preregistration:
+
+* `refusal` = `I'm sorry, but I can't help with that.`
+* `format_only` = `ANSWER: A`
+* `boilerplate` = 571 characters, beginning `Thank you for the question. This is an interesti...`
+
+> **Flag rule.** A task is flagged when at least one content-free member scores at or above that task's own `majority` baseline **and** strictly above zero. `majority` is computed per task from the dataset, never assumed: the PAWS test split is 55.8 per cent `No`, so its chance line is 0.558.
+
+## Instrument defects found so far
+
+Defects are logged, not quietly fixed. What the instrument got wrong is what tells a reader how far to trust what it now says. Full write-ups in [`INSTRUMENT_LESSONS.md`](INSTRUMENT_LESSONS.md).
+
+| # | defect | what it would have invalidated |
+|---|---|---|
+| 001 | `choice()` tasks were not driven at all: the scorer reads marked choices, not completion text | every multiple-choice row; 16 of the first 20 tasks use `choice()` |
+| 002 | the flag rule fired on `0 >= 0` when nothing scored at all | turned harness failures into findings |
+| 003 | reference baselines could not parse on multiple-choice tasks | the chance line the whole flag rule rests on |
+
+## Limitations
+
+| limitation | what it means for the number |
+|---|---|
+| A flagged task is not a worthless benchmark | a loose scorer inflates a number without saying the underlying task is easy. **No claim is made about the conclusions of any published paper** that used any of these evals. |
+| One version pin | everything here is measured on `inspect_ai` 0.3.263 and `inspect_evals` 0.20.0. Rows from different versions are never mixed; on any bump the whole sweep re-runs. |
+| Deterministic scorers only | model-graded tasks are excluded from this number and deferred to a separate arm with its own intervals. The exclusion is counted, not hidden. |
+| The rendering rule is a choice | writing a member in the task's answer template changes what it scores. Both arms are published so the size of that effect is visible, but the headline depends on which arm is preregistered. |
+| Reachability is far below the collection size | most tasks need a container, a grader model, a gated dataset or an extra dependency. The denominator is published as prominently as the rate. |
+| `echo` on multimodal tasks | where inputs are images, echoing the input back is not well defined; such tasks are marked in the coverage file. |
+
+## Reproducing it
 
 ```
-uv venv
-uv pip install -e ".[dev]"
+uv venv && uv pip install -e ".[dev]"
+pytest                                 # includes the #2331 anchor
+evalfloor inventory                    # regenerate the task inventory
+evalfloor check inspect_evals/paws     # exits non-zero
+evalfloor sweep --first-sweep --out results/
+evalfloor report                       # regenerates every number here
 ```
 
-## Use
-
-```
-evalfloor inventory                          # static inventory of every task and its scorer
-evalfloor check inspect_evals/paws           # exits non-zero when a content-free member reaches majority
-evalfloor sweep --tasks <list> --out results/
-evalfloor report
-```
-
-## How to read a result
-
-A flagged task is **not** a worthless benchmark. A loose scorer inflates a number
-without saying anything about whether the underlying task is easy, and nothing
-here makes any claim about the conclusions of any published paper that used one
-of these evals. What a flag says is narrower and more useful: some part of the
-reported score is available without reading the input.
-
-Every number in `results/` is generated by `report.py` from committed inputs.
-None is typed by hand. Judgement calls live in `rulings.jsonl`, one row each,
-quoting the source line they came from, and the report applies that file
-mechanically.
+Every number in `results/` and in this file is generated. None is typed by hand. Judgement calls live in `rulings.jsonl`, one row each, quoting the source line they came from, and the report applies that file mechanically. `evalfloor sweep` refuses to write a non-smoke result unless `PREREGISTRATION.md` is already committed in git history, and it records that commit hash in every file it generates.
 
 ## Disclosure
 
-**Built with LLM coding agents.** The harness, the battery definitions and the
-tests in this repository were written with Claude Code doing the typing under
-direction. The design, the preregistration, the measurement choices and every
-claim made about the results are the author's, and the anchoring result is
-checked in as a test that anyone can run against pinned versions rather than
-taken on trust.
+**Built with LLM coding agents (Claude), with the author reviewing every number's source.** The harness, the battery definitions and the tests were written with Claude Code doing the typing under direction. The design, the preregistration, the measurement choices and every claim made about the results are the author's, and the anchoring result is checked in as a test anyone can run against pinned versions rather than taken on trust.
 
 ## Licence
 
