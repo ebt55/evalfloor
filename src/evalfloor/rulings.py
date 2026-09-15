@@ -175,5 +175,7 @@ def _recompute(floor: TaskFloor) -> None:
     floor.best_member = best.member
     floor.best_mean = best.mean
     floor.gap_to_majority = best.mean - floor.majority
-    floor.flagged_by = sorted(s.member for s in content_free if s.mean >= floor.majority)
+    floor.flagged_by = sorted(
+        s.member for s in content_free if s.mean >= floor.majority and s.mean > 0.0
+    )
     floor.flagged = bool(floor.flagged_by)

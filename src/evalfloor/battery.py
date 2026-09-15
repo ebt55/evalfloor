@@ -242,8 +242,29 @@ def _format_only(sample: Any, labels: LabelSet, seed: int) -> str:
 # -- reference baselines ----------------------------------------------------
 
 
+def render_reference(sample: Any, label: str) -> str:
+    """Emit a reference baseline in the answer format the task expects.
+
+    On a multiple-choice task the scorer does not read the completion text; it
+    reads which choices the ``multiple_choice()`` solver marked, and that solver
+    only marks a choice when the completion contains "ANSWER: X". A bare "C"
+    therefore scores zero, and a chance line that cannot parse is not a chance
+    line -- it is an instrument defect that would flag every multiple-choice task
+    in the collection.
+
+    Only the two **reference baselines** are rendered this way. Content-free
+    members are emitted exactly as defined, unformatted. The asymmetry is
+    deliberate and it runs in the conservative direction: it *raises* the bar a
+    content-free member has to clear, so it can only ever reduce the flag count,
+    never inflate it.
+    """
+    if getattr(sample, "choices", None):
+        return f"ANSWER: {label}"
+    return label
+
+
 def _majority(sample: Any, labels: LabelSet, seed: int) -> str:
-    return labels.majority_label
+    return render_reference(sample, labels.majority_label)
 
 
 def _uniform(sample: Any, labels: LabelSet, seed: int) -> str:
@@ -257,7 +278,7 @@ def _uniform(sample: Any, labels: LabelSet, seed: int) -> str:
         return ""
     sample_id = getattr(sample, "id", None)
     rng = random.Random(f"{seed}|{sample_id}")
-    return rng.choice(labels.labels)
+    return render_reference(sample, rng.choice(labels.labels))
 
 
 CONTENT_FREE_MEMBERS: tuple[BatteryMember, ...] = (

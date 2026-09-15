@@ -233,7 +233,11 @@ def cmd_check(args: argparse.Namespace) -> int:
                 print(f"    {member.name:<14} n/a  ({score.not_applicable_reason})")
                 continue
             mark = ""
-            if member.kind == "content_free" and score.mean >= floor.majority:
+            if (
+                member.kind == "content_free"
+                and score.mean >= floor.majority
+                and score.mean > 0.0
+            ):
                 mark = "  <-- at or above majority"
             print(
                 f"    {member.name:<14} {100 * score.mean:6.2f}%  "

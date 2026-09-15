@@ -205,3 +205,75 @@ def test_wilson_interval_brackets_the_point_estimate() -> None:
     low_small, high_small = wilson_interval(5, 10)
     assert (high_small - low_small) > (high - low)
     assert wilson_interval(0, 0) == (0.0, 0.0)
+
+
+# --------------------------------------------------------------------------
+# 7. Instrument defects, pinned so they cannot come back
+# --------------------------------------------------------------------------
+
+
+def test_multiple_choice_tasks_are_actually_driven() -> None:
+    """Defect found in the first smoke sweep, 2026-09-15.
+
+    ``choice()`` does not read the completion text. It reads which entries of
+    ``state.choices`` are marked correct, and only the ``multiple_choice()``
+    solver marks them, by parsing "ANSWER: X" after generation. Driving the
+    scorer without that step scored every member zero on every multiple-choice
+    task -- including the reference baselines -- so ``majority`` was 0 and the
+    whole battery satisfied ``0 >= 0``. Every choice() task in the collection
+    would have been reported as flagged.
+    """
+    from inspect_ai import Task
+    from inspect_ai.dataset import MemoryDataset, Sample
+    from inspect_ai.scorer import choice
+
+    samples = [
+        Sample(
+            id=i,
+            input="pick one",
+            choices=["alpha", "beta", "gamma", "delta"],
+            target="B" if i % 2 else "A",
+        )
+        for i in range(40)
+    ]
+    run = _run(Task(dataset=MemoryDataset(samples), scorer=choice()), "evalfloor/mc_probe")
+    floor = aggregate_run(run)[0]
+
+    # The chance line must be a real chance line, not zero.
+    assert floor.majority > 0.0, "majority baseline failed to parse: instrument defect"
+    assert floor.majority == pytest.approx(0.5, abs=1e-9)
+    # format_only is "ANSWER: A", which genuinely selects option A.
+    assert floor.members["format_only"].mean == pytest.approx(0.5, abs=1e-9)
+    # A bare letter list is not an answer, so it selects nothing.
+    assert floor.members["all_letters"].mean == 0.0
+
+
+def test_a_task_where_nothing_scores_is_not_flagged() -> None:
+    """The zero guard on the flag rule. 0 >= 0 is a defect signature, not a floor.
+
+    A scorer that never credits anything stands in for the real case: a scorer
+    the harness cannot drive. Before the guard, its majority line was 0 and every
+    content-free member satisfied ``0 >= 0``, so the task reported as flagged by
+    the entire battery -- which is exactly what ``sec_qa_v2`` did.
+    """
+    from inspect_ai import Task
+    from inspect_ai.dataset import MemoryDataset, Sample
+    from inspect_ai.scorer import INCORRECT, Score, Target, accuracy, scorer
+    from inspect_ai.solver import TaskState
+
+    @scorer(metrics=[accuracy()], name="evalfloor/never_scores")
+    def never_scores():
+        async def score(state: TaskState, target: Target) -> Score:
+            return Score(value=INCORRECT)
+
+        return score
+
+    samples = [Sample(id=i, input="q", target="Yes" if i % 2 else "No") for i in range(20)]
+    run = _run(
+        Task(dataset=MemoryDataset(samples), scorer=never_scores()), "evalfloor/null_probe"
+    )
+    floor = aggregate_run(run)[0]
+    assert floor.majority == 0.0
+    assert all(s.mean == 0.0 for s in floor.members.values() if s.applicable)
+    assert floor.flagged is False, "a task where nothing scores must not be flagged"
+    assert floor.flagged_by == []

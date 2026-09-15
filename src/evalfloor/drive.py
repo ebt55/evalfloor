@@ -200,10 +200,19 @@ def label_set(samples: Sequence[SampleView]) -> LabelSet:
 
 
 def build_state(sample: SampleView, completion: str) -> TaskState:
-    """A TaskState whose model output is the battery completion."""
+    """A TaskState whose model output is the battery completion.
+
+    For a multiple-choice sample the scorer is not a function of the completion
+    text alone. ``choice()`` reads which entries of ``state.choices`` are marked
+    correct, and those marks are set by the ``multiple_choice()`` solver *after*
+    generation, by parsing "ANSWER: X" out of the completion. Drive the scorer
+    without that step and every completion scores zero, including the reference
+    baselines -- which is an instrument defect, not a finding. So the same
+    parse-and-mark step Inspect's own solver performs is applied here.
+    """
     user = ChatMessageUser(content=sample.input_text)
     assistant = ChatMessageAssistant(content=completion, model=MOCK_MODEL)
-    return TaskState(
+    state = TaskState(
         model=ModelName(MOCK_MODEL),
         sample_id=sample.id,
         epoch=1,
@@ -215,6 +224,24 @@ def build_state(sample: SampleView, completion: str) -> TaskState:
         metadata=dict(sample.metadata) if sample.metadata else {},
         completed=True,
     )
+    if sample.choices:
+        _mark_multiple_choice_answers(state)
+    return state
+
+
+def _mark_multiple_choice_answers(state: TaskState) -> None:
+    """Replicate what ``multiple_choice()`` does to the state after generate."""
+    from inspect_ai.solver._multiple_choice import (
+        parse_answers,
+        set_choices_based_on_generated_response,
+    )
+
+    try:
+        answers = parse_answers(state, multiple_correct=False)
+    except Exception:
+        return
+    if answers:
+        set_choices_based_on_generated_response(state, answers)
 
 
 async def score_one(scorer: Any, sample: SampleView, completion: str) -> Score:

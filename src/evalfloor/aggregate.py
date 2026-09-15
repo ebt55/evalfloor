@@ -3,11 +3,20 @@
 The flag rule, fixed by preregistration:
 
     A task is **flagged** when at least one content-free battery member scores at
-    or above the ``majority`` reference baseline on that task.
+    or above the ``majority`` reference baseline on that task, **and** that
+    member's score is greater than zero.
 
 ``majority`` is computed per task from that task's own dataset, so the rule never
 depends on a global assumption about label balance. On ``paws`` the majority line
 is 0.558, not 0.5.
+
+The "greater than zero" clause is not decoration. Without it, any task where
+nothing scores at all -- because the harness cannot drive that scorer, or because
+every completion genuinely fails -- has ``majority == 0`` and every content-free
+member trivially satisfies ``0 >= 0``, so the whole battery "flags" it. That was
+observed on ``sec_qa_v2`` in the first smoke sweep before the multiple-choice
+handling in ``drive.build_state`` existed, and it is a defect signature rather
+than a finding. A member that scores nothing has not reached any floor.
 """
 
 from __future__ import annotations
@@ -164,7 +173,9 @@ def aggregate_run(run: TaskRun, full_dataset_size: int | None = None) -> list[Ta
             floor.best_mean = best.mean
             floor.gap_to_majority = best.mean - floor.majority
             floor.flagged_by = sorted(
-                s.member for s in content_free if s.mean >= floor.majority
+                s.member
+                for s in content_free
+                if s.mean >= floor.majority and s.mean > 0.0
             )
             floor.flagged = bool(floor.flagged_by)
         floors.append(floor)
