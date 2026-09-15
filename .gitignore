@@ -9,3 +9,6 @@ dist/
 .mypy_cache/
 logs/
 .env
+
+# scratch from editing sessions; never part of the package
+*.tmp
