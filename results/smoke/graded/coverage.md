@@ -11,7 +11,7 @@ The denominator comes before the result. **Every task declared in an `eval.yaml`
 | `inspect_ai` | 0.3.263 |
 | `inspect_evals` | 0.20.0 |
 | battery fingerprint | `b019ebb6ecee` |
-| sweep digest | `9aa39322686b532a` |
+| sweep digest | `3aa812fce32e446f` |
 
 ## Totals
 
@@ -23,7 +23,7 @@ The denominator comes before the result. **Every task declared in an `eval.yaml`
 | attempted in this run | 1 |
 | produced a scored floor | 1 |
 | attempted but errored | 0 |
-| flagged | 0 |
+| flagged | 1 |
 
 ## Exclusion reasons
 
@@ -91,7 +91,7 @@ None. Every task attempted in this run produced a scored floor.
 | `inspect_evals/browse_comp` | `browse_comp_scorer(scorer_model)` | `model_graded` | excluded | `sandbox_required` | task declares sandbox= |
 | `inspect_evals/chembench` | `chembench_scorer()` | `deterministic_custom` | reachable, not swept | `` |  |
 | `inspect_evals/class_eval` | `class_eval_scorer()` | `sandbox` | excluded | `sandbox_required` | class_eval_scorer: custom, executes in a sandbox |
-| `inspect_evals/coconot` | `[model_graded_qa(model=m, template=template, instructions=scorer_instructions, grade_pattern=grade_pattern) for m in grader_models]` | `model_graded` | swept, clean | `` |  |
+| `inspect_evals/coconot` | `[model_graded_qa(model=m, template=template, instructions=scorer_instructions, grade_pattern=grade_pattern) for m in grader_models]` | `model_graded` | flagged | `` |  |
 | `inspect_evals/commonsense_qa` | `choice()` | `deterministic` | reachable, not swept | `` |  |
 | `inspect_evals/compute_eval` | `correctness_scorer(cuda_version=cuda_version, benchmark_performance=benchmark_performance, benchmark_runs=benchmark_runs)` | `sandbox` | excluded | `sandbox_required` | correctness_scorer: custom, executes in a sandbox |
 | `inspect_evals/core_bench` | `evaluate_task_questions()` | `sandbox` | excluded | `sandbox_required` | evaluate_task_questions: custom, executes in a sandbox |
