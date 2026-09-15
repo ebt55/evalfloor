@@ -109,8 +109,16 @@ def test_generated_markdown_is_byte_identical_across_runs() -> None:
 def test_uniform_member_is_seeded_reproducibly() -> None:
     run_a = _run(controls.control_loose(), "evalfloor/control_loose")
     run_b = _run(controls.control_loose(), "evalfloor/control_loose")
-    a = sorted((x.seed, x.n_correct) for x in run_a.arms if x.member == "uniform")
-    b = sorted((x.seed, x.n_correct) for x in run_b.arms if x.member == "uniform")
+    a = sorted(
+        (x.seed, x.n_correct)
+        for x in run_a.arms
+        if x.member == "uniform" and x.arm == "rendered"
+    )
+    b = sorted(
+        (x.seed, x.n_correct)
+        for x in run_b.arms
+        if x.member == "uniform" and x.arm == "rendered"
+    )
     assert a == b
     assert len(a) == 5
 

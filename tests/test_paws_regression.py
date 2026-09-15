@@ -145,6 +145,23 @@ def test_echo_scores_without_being_designed_to(paws_run) -> None:
 
 
 def test_every_battery_member_produced_an_arm(paws_run) -> None:
-    expected = sum(len(m.seeds) for m in BATTERY)
+    """Every member, every seed, in both the raw and the rendered arm."""
+    from evalfloor.battery import ARMS
+
+    expected = sum(len(m.seeds) for m in BATTERY) * len(ARMS)
     assert len(paws_run.arms) == expected
     assert all(a.applicable for a in paws_run.arms)
+
+
+def test_paws_declares_no_answer_template_so_the_arms_coincide(paws_run) -> None:
+    """paws is scored by ``includes()`` over free prose, not by a choice
+    template, so rendering is the identity here and the two arms must be
+    identical. That is what makes the 8000/8000 result independent of the
+    rendering rule: no choice made about templates can have produced it."""
+    assert paws_run.answer_template == "bare"
+    raw = {(a.member, a.seed): a.n_correct for a in paws_run.arms if a.arm == "raw"}
+    rendered = {
+        (a.member, a.seed): a.n_correct for a in paws_run.arms if a.arm == "rendered"
+    }
+    assert raw == rendered
+    assert raw[("all_labels", 0)] == EXPECTED_SAMPLES

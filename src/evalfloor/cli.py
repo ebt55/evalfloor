@@ -104,6 +104,92 @@ def _resolve_task_list(args: argparse.Namespace) -> list[str]:
     raise SystemExit("sweep needs --tasks or --first-sweep")
 
 
+# --------------------------------------------------------------------------
+# The ordering gate
+#
+# "The preregistration was committed before any result existed" is a claim, and
+# a claim a stranger cannot check is worth nothing. So the sweep refuses to
+# produce a result at all unless PREREGISTRATION.md is already in git history,
+# and it stamps that file's commit hash into sweep.json and into every generated
+# markdown header. Anyone can then run `git log -- PREREGISTRATION.md` and see
+# for themselves that the commit predates the result.
+#
+# results/smoke/ is exempt. A smoke run is a harness check, not a result, and
+# the generated files say so in place of a commit hash.
+# --------------------------------------------------------------------------
+
+PREREGISTRATION_FILENAME = "PREREGISTRATION.md"
+
+#: The one output directory exempt from the gate.
+SMOKE_DIR_NAMES = ("smoke",)
+
+
+def is_smoke_output(out: pathlib.Path) -> bool:
+    """True for ``results/smoke`` and anything under it."""
+    parts = [p.lower() for p in out.parts]
+    return any(name in parts for name in SMOKE_DIR_NAMES)
+
+
+def preregistration_commit(
+    repo: pathlib.Path | None = None, filename: str = PREREGISTRATION_FILENAME
+) -> str | None:
+    """The hash of the commit that introduced the preregistration, or None.
+
+    Uses the *earliest* commit touching the file, because what has to predate
+    the result is when the preregistration was first committed, not when it was
+    last edited.
+    """
+    import subprocess
+
+    repo = repo or pathlib.Path.cwd()
+    try:
+        proc = subprocess.run(
+            ["git", "log", "--reverse", "--format=%H", "--", filename],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    hashes = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return hashes[0] if hashes else None
+
+
+def check_ordering_gate(out: pathlib.Path, repo: pathlib.Path | None = None) -> str | None:
+    """Return the preregistration commit, or raise SystemExit explaining why not.
+
+    Returns None for a smoke output, which is exempt.
+    """
+    if is_smoke_output(out):
+        return None
+    commit = preregistration_commit(repo)
+    if commit:
+        return commit
+    raise SystemExit(
+        f"refusing to sweep into {out}/.\n"
+        f"\n"
+        f"  {PREREGISTRATION_FILENAME} is not in this repository's git history.\n"
+        f"\n"
+        f"The whole point of a preregistration is that it is committed BEFORE any\n"
+        f"result exists, and that a stranger can check the ordering with\n"
+        f"`git log -- {PREREGISTRATION_FILENAME}`. Writing the sweep first and the\n"
+        f"preregistration afterwards would make the claim unverifiable, so the\n"
+        f"sweep will not run.\n"
+        f"\n"
+        f"What to do:\n"
+        f"  1. review PREREGISTRATION.draft.md and answer its open questions\n"
+        f"  2. git mv PREREGISTRATION.draft.md {PREREGISTRATION_FILENAME}\n"
+        f"  3. git add {PREREGISTRATION_FILENAME} && git commit\n"
+        f"  4. re-run this command\n"
+        f"\n"
+        f"To exercise the harness without producing a result, sweep into\n"
+        f"results/smoke/, which is exempt."
+    )
+
+
 def _sweep(tasks: Sequence[str], limit: int | None) -> tuple[list[TaskRun], list[Any]]:
     runs: list[TaskRun] = []
     floors: list[Any] = []
@@ -128,18 +214,30 @@ def _sweep(tasks: Sequence[str], limit: int | None) -> tuple[list[TaskRun], list
 
 
 def cmd_sweep(args: argparse.Namespace) -> int:
-    tasks = _resolve_task_list(args)
     out = pathlib.Path(args.out)
+    # The gate runs BEFORE any task is loaded, so a refused sweep costs nothing
+    # and cannot leave a half-written result behind.
+    prereg_commit = check_ordering_gate(out)
+    smoke = is_smoke_output(out)
+
+    tasks = _resolve_task_list(args)
+    if smoke:
+        print(f"SMOKE run into {out}/ -- exempt from the ordering gate, not a result")
+    else:
+        print(f"preregistration committed at {prereg_commit[:12]}; proceeding")
     print(f"sweeping {len(tasks)} tasks into {out}/")
     runs, floors = _sweep(tasks, args.limit)
 
     payload: dict[str, Any] = {
-        "schema": 1,
+        "schema": 2,
         "pins": installed_pins(),
         "battery_fingerprint": battery_fingerprint(),
         "limit": args.limit,
         "tasks": list(tasks),
         "digest": sweep_digest(runs),
+        "smoke": smoke,
+        "preregistration_path": PREREGISTRATION_FILENAME,
+        "preregistration_commit": prereg_commit,
         # Recorded, but deliberately absent from every generated .md, so that two
         # sweeps produce byte-identical markdown.
         "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
@@ -151,10 +249,13 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     print(f"digest {payload['digest'][:16]}")
 
     flagged, denom = flag_rate(floors)
-    print(f"flag rate before rulings: {flagged} of {denom}")
+    flagged_raw, _ = flag_rate(floors, arm="raw")
+    print(f"flag rate before rulings: {flagged} of {denom} rendered, {flagged_raw} of {denom} raw")
 
     if not args.no_report:
-        written = _regenerate(out, pathlib.Path(args.rulings), payload)
+        written = _regenerate(
+            out, pathlib.Path(args.rulings), payload, readme=not smoke
+        )
         for path in written:
             print(f"wrote {path}")
     return EXIT_OK
@@ -175,29 +276,59 @@ def _load_inventory(out: pathlib.Path) -> list[dict[str, Any]] | None:
 
 
 def _regenerate(
-    out: pathlib.Path, rulings: pathlib.Path, payload: dict[str, Any]
+    out: pathlib.Path,
+    rulings: pathlib.Path,
+    payload: dict[str, Any],
+    readme: bool = True,
 ) -> list[pathlib.Path]:
-    return write_all(payload, out, rulings, inventory=_load_inventory(out))
+    return write_all(
+        payload,
+        out,
+        rulings,
+        inventory=_load_inventory(out),
+        # A smoke run never rewrites the README. Its numbers are not results.
+        readme_path=pathlib.Path("README.md") if readme else None,
+    )
 
 
 def cmd_report(args: argparse.Namespace) -> int:
     out = pathlib.Path(args.out)
     sweep_path = out / "sweep.json"
     if not sweep_path.exists():
-        print(f"no sweep payload at {sweep_path}; run `evalfloor sweep` first", file=sys.stderr)
+        print(
+            f"no sweep payload at {sweep_path}; run `evalfloor sweep` first",
+            file=sys.stderr,
+        )
         return EXIT_UNRUNNABLE
     payload = read_sweep(sweep_path)
-    written = _regenerate(out, pathlib.Path(args.rulings), payload)
+    readme = not payload.get("smoke", False) and not args.no_readme
+    written = _regenerate(out, pathlib.Path(args.rulings), payload, readme=readme)
     floors = floors_from_payload(payload)
     flagged, denom = flag_rate(floors)
+    flagged_raw, _ = flag_rate(floors, arm="raw")
     for path in written:
         print(f"wrote {path}")
-    print(f"{flagged} of {denom} tasks flagged before rulings")
+    print(f"{flagged} of {denom} flagged before rulings (rendered arm)")
+    print(f"{flagged_raw} of {denom} flagged on the raw arm")
+    if payload.get("smoke"):
+        print("smoke payload: README.md was not rewritten")
     if denom and flagged < NEGATIVE_RESULT_THRESHOLD:
         print(
             f"note: below the preregistered negative-result threshold of "
             f"{NEGATIVE_RESULT_THRESHOLD}"
         )
+    return EXIT_OK
+
+
+def cmd_readme(args: argparse.Namespace) -> int:
+    """Write the README placeholder version, before any sweep exists."""
+    from .report import render_readme
+
+    out = pathlib.Path(args.out)
+    inventory = _load_inventory(out)
+    path = pathlib.Path("README.md")
+    path.write_text(render_readme(None, inventory, {}), encoding="utf-8")
+    print(f"wrote {path} (placeholder headline; no sweep payload used)")
     return EXIT_OK
 
 
@@ -290,10 +421,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_sweep.add_argument("--no-report", action="store_true")
     p_sweep.set_defaults(func=cmd_sweep)
 
-    p_report = sub.add_parser("report", help="regenerate the markdown from a sweep payload")
+    p_report = sub.add_parser(
+        "report", help="regenerate the markdown and the README from a sweep payload"
+    )
     p_report.add_argument("--out", default=str(DEFAULT_RESULTS))
     p_report.add_argument("--rulings", default=str(DEFAULT_RULINGS))
+    p_report.add_argument(
+        "--no-readme", action="store_true", help="leave README.md alone"
+    )
     p_report.set_defaults(func=cmd_report)
+
+    p_readme = sub.add_parser(
+        "readme", help="write the placeholder README, before any sweep has run"
+    )
+    p_readme.add_argument("--out", default=str(DEFAULT_RESULTS))
+    p_readme.set_defaults(func=cmd_readme)
 
     p_check = sub.add_parser(
         "check", help="exit non-zero when a content-free member reaches majority"

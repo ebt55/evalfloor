@@ -1,9 +1,10 @@
-"""Write ``results/*.md``. No number in any generated file is typed by hand.
+"""Write ``results/*.md`` and ``README.md``. No number is typed by hand.
 
-Every figure that appears in the matrix, the coverage file or the controls file
-is computed here from a committed sweep payload plus ``rulings.jsonl``. The files
-carry a "GENERATED" banner and the pins the measurement was taken under, so a row
-produced under one version pair can never be silently read next to another.
+Every figure that appears in the matrix, the coverage file, the rulings log or
+the README is computed here from a committed sweep payload plus
+``rulings.jsonl`` plus the generated inventory. The files carry a "GENERATED"
+banner and the pins the measurement was taken under, so a row produced under one
+version pair can never be silently read next to another.
 
 Generated markdown deliberately contains **no timestamps and no wall-clock
 timings**, so two sweeps of the deterministic arms produce byte-identical output
@@ -14,11 +15,12 @@ from __future__ import annotations
 
 import json
 import pathlib
-from typing import Any, Iterable, Sequence
+from typing import Any, Sequence
 
 from . import installed_pins
 from .aggregate import TaskFloor, flag_rate
 from .battery import (
+    ARMS,
     BATTERY,
     BOILERPLATE_TEXT,
     CONTENT_FREE_NAMES,
@@ -38,6 +40,19 @@ GENERATED_BANNER = (
 #: result: the collection is tighter than the single known case suggested.
 NEGATIVE_RESULT_THRESHOLD = 5
 
+#: Exclusion reasons, with the plain-English meaning printed beside each count.
+EXCLUSION_MEANINGS: dict[str, str] = {
+    "sandbox_required": "the task or its scorer needs a container",
+    "extra_dependency": "needs an optional dependency group that is not installed",
+    "model_graded": "the scorer needs a grader model; not part of the deterministic arm",
+    "network_required": "fetches from a URL or clones a repository at run time",
+    "gated_dataset": "the Hugging Face dataset requires accepting terms or an access grant",
+    "too_large": "the dataset exceeds the disk cap recorded in PREREGISTRATION.md",
+    "unclassified_scorer": "the scorer could not be resolved statically",
+    "not_registered": "no entry in inspect_evals._registry",
+    "load_error": "the task function raised when it was run",
+}
+
 
 def _pct(x: float) -> str:
     return f"{100 * x:.1f}%"
@@ -47,7 +62,9 @@ def _esc(text: Any) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ")
 
 
-def provenance_block(digest: str | None = None, extra: dict[str, Any] | None = None) -> list[str]:
+def provenance_block(
+    digest: str | None = None, extra: dict[str, Any] | None = None
+) -> list[str]:
     pins = installed_pins()
     lines = [
         "| provenance | value |",
@@ -63,6 +80,22 @@ def provenance_block(digest: str | None = None, extra: dict[str, Any] | None = N
     return lines
 
 
+def _prereg_block(payload: dict[str, Any]) -> list[str]:
+    """The preregistration commit this sweep ran under, if any."""
+    commit = payload.get("preregistration_commit")
+    path = payload.get("preregistration_path", "PREREGISTRATION.md")
+    if not commit:
+        return [
+            "> **No preregistration commit recorded.** This payload came from a smoke "
+            "run, which is exempt from the ordering gate and is not a result.",
+        ]
+    return [
+        f"Preregistration `{path}` was committed at `{commit[:12]}` **before** this "
+        f"sweep ran. Anyone can check that independently: "
+        f"`git log --format='%H %ad' -- {path}`.",
+    ]
+
+
 # --------------------------------------------------------------------------
 # The matrix
 # --------------------------------------------------------------------------
@@ -72,10 +105,13 @@ def render_matrix(
     floors_before: Sequence[TaskFloor],
     floors_after: Sequence[TaskFloor] | None = None,
     digest: str | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> str:
     floors_after = floors_after if floors_after is not None else floors_before
+    payload = payload or {}
     flagged_before, denom = flag_rate(floors_before)
     flagged_after, _ = flag_rate(floors_after)
+    flagged_raw, _ = flag_rate(floors_after, arm="raw")
 
     lines: list[str] = ["# Floor matrix", "", GENERATED_BANNER, ""]
 
@@ -91,9 +127,10 @@ def render_matrix(
         )
         lines.append("")
         lines.append(
-            f"Before rulings the count was **{flagged_before} of {denom}**. "
-            f"The denominator is the number of tasks that produced a scored floor in "
-            f"this sweep; `results/coverage.md` says what is not in it and why."
+            f"Before rulings the count was **{flagged_before} of {denom}**. On the raw "
+            f"arm -- members written plainly, ignoring each task's answer template -- "
+            f"it is **{flagged_raw} of {denom}**. The headline uses the rendered arm, "
+            "as preregistered. `coverage.md` says what is not in this denominator."
         )
         if flagged_after < NEGATIVE_RESULT_THRESHOLD:
             lines.append("")
@@ -104,6 +141,8 @@ def render_matrix(
                 f"tighter than the single known case suggested. At {flagged_after} "
                 f"of {denom}, that is the finding."
             )
+    lines.append("")
+    lines.extend(_prereg_block(payload))
     lines.append("")
     lines.extend(provenance_block(digest))
     lines.append("")
@@ -117,15 +156,27 @@ def render_matrix(
     )
     lines.append("")
 
-    lines.append("## Per task")
+    lines.append("## Per task, rendered arm")
     lines.append("")
-    header = ["task", "scorer", "n", "majority", "uniform", "best content-free", "score", "gap", "flagged"]
+    header = [
+        "task",
+        "scorer",
+        "template",
+        "n",
+        "majority",
+        "uniform",
+        "best content-free",
+        "score",
+        "gap",
+        "flagged",
+    ]
     lines.append("| " + " | ".join(header) + " |")
     lines.append("|" + "---|" * len(header))
     for f in floors_after:
         if f.error:
             lines.append(
-                f"| `{f.task}` | - | - | - | - | - | - | - | error: {_esc(f.error)[:60]} |"
+                f"| `{f.task}` | - | - | - | - | - | - | - | - | error: "
+                f"{_esc(f.error)[:60]} |"
             )
             continue
         uniform = _pct(f.uniform) if f.uniform is not None else "n/a"
@@ -133,36 +184,65 @@ def render_matrix(
         if f.ruling:
             flagged += f" ({f.ruling})"
         lines.append(
-            f"| `{f.task}` | `{_esc(f.scorer)}` | {f.n_samples} | {_pct(f.majority)} | "
-            f"{uniform} | {f.best_member or '-'} | {_pct(f.best_mean)} | "
-            f"{f.gap_to_majority:+.3f} | {flagged} |"
+            f"| `{f.task}` | `{_esc(f.scorer)}` | {f.answer_template} | {f.n_samples} | "
+            f"{_pct(f.majority)} | {uniform} | {f.best_member or '-'} | "
+            f"{_pct(f.best_mean)} | {f.gap_to_majority:+.3f} | {flagged} |"
         )
     lines.append("")
 
-    lines.append("## Every battery member, every task")
+    lines.append("## What the rendering rule changed")
     lines.append("")
-    members = [m for m in CONTENT_FREE_NAMES] + [m for m in REFERENCE_NAMES]
-    lines.append("| task | scorer | " + " | ".join(members) + " |")
-    lines.append("|" + "---|" * (len(members) + 2))
+    lines.append(
+        "Every member is defined semantically and then written down in the task's own "
+        "answer template when it declares one. Both forms are scored. On a task that "
+        "declares no template the two arms are identical by construction, and the rows "
+        "below show that rather than asserting it."
+    )
+    lines.append("")
+    lines.append(
+        "| task | template | majority raw | majority rendered | best CF raw | "
+        "best CF rendered | flagged raw | flagged rendered |"
+    )
+    lines.append("|" + "---|" * 8)
     for f in floors_after:
         if f.error:
             continue
-        cells: list[str] = []
-        for name in members:
-            score = f.members.get(name)
-            if score is None:
-                cells.append("-")
-            elif not score.applicable:
-                cells.append("n/a")
-            else:
-                cells.append(_pct(score.mean))
-        lines.append(f"| `{f.task}` | `{_esc(f.scorer)}` | " + " | ".join(cells) + " |")
+        lines.append(
+            f"| `{f.task}` | {f.answer_template} | {_pct(f.majority_raw)} | "
+            f"{_pct(f.majority)} | {f.best_member_raw or '-'} "
+            f"{_pct(f.best_mean_raw)} | {f.best_member or '-'} {_pct(f.best_mean)} | "
+            f"{'yes' if f.flagged_raw else 'no'} | {'yes' if f.flagged else 'no'} |"
+        )
     lines.append("")
 
-    lines.append("## Counts, not rates")
+    members = list(CONTENT_FREE_NAMES) + list(REFERENCE_NAMES)
+    for arm in ARMS:
+        lines.append(f"## Every battery member, every task -- {arm} arm")
+        lines.append("")
+        lines.append("| task | scorer | " + " | ".join(members) + " |")
+        lines.append("|" + "---|" * (len(members) + 2))
+        for f in floors_after:
+            if f.error:
+                continue
+            source = f.members_raw if arm == "raw" else f.members
+            cells: list[str] = []
+            for name in members:
+                score = source.get(name)
+                if score is None:
+                    cells.append("-")
+                elif not score.applicable:
+                    cells.append("n/a")
+                else:
+                    cells.append(_pct(score.mean))
+            lines.append(
+                f"| `{f.task}` | `{_esc(f.scorer)}` | " + " | ".join(cells) + " |"
+            )
+        lines.append("")
+
+    lines.append("## Counts, not rates (rendered arm)")
     lines.append("")
-    lines.append("| task | scorer | member | correct | scored |")
-    lines.append("|---|---|---|---|---|")
+    lines.append("| task | scorer | member | correct | scored | completion scored |")
+    lines.append("|---|---|---|---|---|---|")
     for f in floors_after:
         if f.error:
             continue
@@ -172,29 +252,42 @@ def render_matrix(
                 continue
             lines.append(
                 f"| `{f.task}` | `{_esc(f.scorer)}` | {name} | "
-                f"{score.n_correct} | {score.n_scored} |"
+                f"{score.n_correct} | {score.n_scored} | "
+                f"`{_esc(score.example_completion[:60])}` |"
             )
     lines.append("")
 
     lines.append("## The battery")
     lines.append("")
-    lines.append("| member | kind | completion |")
-    lines.append("|---|---|---|")
+    lines.append(render_battery_table())
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_battery_table() -> str:
+    lines = [
+        "| member | kind | semantics | templated | completion |",
+        "|---|---|---|---|---|",
+    ]
     for m in BATTERY:
-        lines.append(f"| `{m.name}` | {m.kind} | {_esc(m.description)} |")
+        lines.append(
+            f"| `{m.name}` | {m.kind} | {m.semantic} | "
+            f"{'yes' if m.templated else 'no'} | {_esc(m.description)} |"
+        )
     lines.append("")
     lines.append("Literal strings, fixed by preregistration:")
     lines.append("")
     lines.append(f"* `refusal` = `{REFUSAL_TEXT}`")
     lines.append(f"* `format_only` = `{FORMAT_ONLY_TEXT}`")
-    lines.append(f"* `boilerplate` = {len(BOILERPLATE_TEXT)} characters, beginning "
-                 f"`{BOILERPLATE_TEXT[:48]}...`")
-    lines.append("")
+    lines.append(
+        f"* `boilerplate` = {len(BOILERPLATE_TEXT)} characters, beginning "
+        f"`{BOILERPLATE_TEXT[:48]}...`"
+    )
     return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------
-# Coverage
+# Coverage -- one row for every declared task
 # --------------------------------------------------------------------------
 
 
@@ -203,24 +296,24 @@ def render_coverage(
     swept_tasks: Sequence[str],
     floors: Sequence[TaskFloor],
     digest: str | None = None,
+    payload: dict[str, Any] | None = None,
 ) -> str:
-    from collections import Counter
-
+    payload = payload or {}
     swept = set(swept_tasks)
     errored = {f.task: f.error for f in floors if f.error}
     scored = {f.task for f in floors if f.error is None and f.members}
-
-    reasons = Counter(
-        row["exclusion_reason"] for row in inventory if not row["reachable"]
-    )
+    flagged = {f.task for f in floors if f.error is None and f.flagged}
     reachable = [row for row in inventory if row["reachable"]]
 
     lines: list[str] = ["# Coverage", "", GENERATED_BANNER, ""]
     lines.append(
-        "The denominator comes before the result. Every task declared in an "
-        "`eval.yaml` gets exactly one row here: it was swept, it is reachable but "
-        "not yet swept, or there is a recorded reason it cannot be."
+        "The denominator comes before the result. **Every task declared in an "
+        "`eval.yaml` has exactly one row in the table at the bottom of this file**: "
+        "it was swept and produced a floor, it is reachable but not yet swept, it "
+        "failed when it was run, or there is a recorded reason it cannot be run."
     )
+    lines.append("")
+    lines.extend(_prereg_block(payload))
     lines.append("")
     lines.extend(provenance_block(digest))
     lines.append("")
@@ -232,27 +325,15 @@ def render_coverage(
     lines.append(f"| tasks declared in `eval.yaml` files | {len(inventory)} |")
     lines.append(f"| reachable for the deterministic sweep | {len(reachable)} |")
     lines.append(f"| excluded, with a reason | {len(inventory) - len(reachable)} |")
-    lines.append(f"| swept in this run | {len(swept)} |")
+    lines.append(f"| attempted in this run | {len(swept)} |")
     lines.append(f"| produced a scored floor | {len(scored)} |")
-    lines.append(f"| swept but errored | {len(errored)} |")
+    lines.append(f"| attempted but errored | {len(errored)} |")
+    lines.append(f"| flagged | {len(flagged)} |")
     lines.append("")
 
     lines.append("## Exclusion reasons")
     lines.append("")
-    lines.append("| reason | tasks | meaning |")
-    lines.append("|---|---|---|")
-    meanings = {
-        "sandbox_required": "the task or its scorer needs a container",
-        "extra_dependency": "needs an optional dependency group that is not installed",
-        "model_graded": "the scorer needs a grader model; not part of the deterministic arm",
-        "network_required": "fetches from a URL or clones a repository at run time",
-        "gated_dataset": "the Hugging Face dataset requires accepting terms or an access grant",
-        "too_large": "the dataset exceeds the disk cap recorded in PREREGISTRATION.md",
-        "unclassified_scorer": "the scorer could not be resolved statically",
-        "not_registered": "no entry in inspect_evals._registry",
-    }
-    for reason, count in sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0])):
-        lines.append(f"| `{reason}` | {count} | {meanings.get(reason, '')} |")
+    lines.append(render_exclusion_table(inventory))
     lines.append("")
 
     lines.append("## Run failures")
@@ -266,26 +347,53 @@ def render_coverage(
         lines.append("None. Every task attempted in this run produced a scored floor.")
     lines.append("")
 
-    lines.append("## Every task")
+    lines.append(f"## Every task ({len(inventory)} rows)")
     lines.append("")
-    lines.append("| task | status | reason | detail |")
-    lines.append("|---|---|---|---|")
+    lines.append("| task | scorer | class | status | reason | detail |")
+    lines.append("|---|---|---|---|---|---|")
+    covered = 0
     for row in inventory:
         task = row["name"]
         if task in errored:
             status, reason, detail = "failed", "load_error", errored[task]
         elif task in scored:
-            status, reason, detail = "swept", "", ""
+            status = "flagged" if task in flagged else "swept, clean"
+            reason, detail = "", ""
         elif row["reachable"]:
             status, reason, detail = "reachable, not swept", "", ""
         else:
             status = "excluded"
             reason = row["exclusion_reason"]
             detail = row["exclusion_detail"]
+        covered += 1
         lines.append(
-            f"| `{task}` | {status} | `{reason}` | {_esc(detail)[:140]} |"
+            f"| `{task}` | `{_esc(row.get('scorer_expr') or '-')}` | "
+            f"`{row.get('scorer_class', '?')}` | {status} | `{reason}` | "
+            f"{_esc(detail)[:140]} |"
         )
     lines.append("")
+    lines.append(
+        f"{covered} rows for {len(inventory)} declared tasks. Every declared task is "
+        "accounted for; none is silently dropped."
+    )
+    lines.append("")
+    return "\n".join(lines)
+
+
+def render_exclusion_table(inventory: Sequence[dict[str, Any]]) -> str:
+    from collections import Counter
+
+    reasons = Counter(
+        row["exclusion_reason"] for row in inventory if not row["reachable"]
+    )
+    reachable = sum(1 for row in inventory if row["reachable"])
+    lines = ["| reason | tasks | meaning |", "|---|---|---|"]
+    for reason, count in sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0])):
+        lines.append(f"| `{reason}` | {count} | {EXCLUSION_MEANINGS.get(reason, '')} |")
+    lines.append(
+        f"| **reachable** | **{reachable}** | the deterministic sweep can run these |"
+    )
+    lines.append(f"| **declared total** | **{len(inventory)}** | |")
     return "\n".join(lines)
 
 
@@ -294,9 +402,7 @@ def render_coverage(
 # --------------------------------------------------------------------------
 
 
-def render_rulings(
-    applied: Sequence[AppliedRuling], unmatched: Sequence[Ruling]
-) -> str:
+def render_rulings(applied: Sequence[AppliedRuling], unmatched: Sequence[Ruling]) -> str:
     lines: list[str] = ["# Rulings applied", "", GENERATED_BANNER, ""]
     lines.append(
         "Every judgement call in the sweep, applied mechanically from "
@@ -328,6 +434,233 @@ def render_rulings(
 
 
 # --------------------------------------------------------------------------
+# README
+# --------------------------------------------------------------------------
+
+#: The literal placeholder shown until a real sweep fills it.
+README_PLACEHOLDER = "{flagged} of {reachable} tasks"
+
+
+def render_readme(
+    floors: Sequence[TaskFloor] | None,
+    inventory: Sequence[dict[str, Any]] | None,
+    payload: dict[str, Any] | None = None,
+) -> str:
+    """The README, with the number and the denominator first.
+
+    Before a real sweep exists the headline is the literal placeholder
+    ``{flagged} of {reachable} tasks``, so it is obvious that nothing is being
+    claimed yet. ``evalfloor report`` fills it from ``results/sweep.json``.
+    """
+    payload = payload or {}
+    pins = installed_pins()
+
+    if floors and inventory:
+        flagged, denom = flag_rate(floors)
+        flagged_raw, _ = flag_rate(floors, arm="raw")
+        reachable = sum(1 for row in inventory if row["reachable"])
+        headline = (
+            f"**{flagged} of {denom} tasks** swept have at least one content-free "
+            "completion that scores at or above their own majority-class baseline. "
+            f"Of the whole collection, **{reachable} of {len(inventory)}** declared "
+            "tasks are reachable for this sweep at all."
+        )
+        secondary = (
+            f"On the raw arm -- members written plainly, ignoring each task's answer "
+            f"template -- it is {flagged_raw} of {denom}."
+        )
+    else:
+        headline = (
+            f"`{README_PLACEHOLDER}` -- **no sweep has run yet.** This line is a "
+            "placeholder that `evalfloor report` fills from `results/sweep.json`. No "
+            "number is claimed here until it does."
+        )
+        secondary = ""
+
+    lines: list[str] = []
+    lines.append("# eval-floor")
+    lines.append("")
+    lines.append(GENERATED_BANNER)
+    lines.append("")
+    lines.append("**What score does an answer with no content in it already get?**")
+    lines.append("")
+    lines.append("## The number, and its denominator")
+    lines.append("")
+    lines.append(headline)
+    if secondary:
+        lines.append("")
+        lines.append(secondary)
+    lines.append("")
+    lines.extend(_prereg_block(payload))
+    lines.append("")
+
+    lines.append("## What this is")
+    lines.append("")
+    lines.append(
+        "A scorer in Inspect is a function of a completion and a target. It does not "
+        "care whether a model produced the completion. So eval-floor drives an eval's "
+        "real scorer, over its real dataset, with a battery of completions that carry "
+        "no information about the sample: the empty string, a refusal, every label "
+        "concatenated. No model is called. The sweep costs nothing and is "
+        "deterministic, which is what makes it reproducible by anyone."
+    )
+    lines.append("")
+
+    lines.append("## The case that started it")
+    lines.append("")
+    lines.append(
+        "Inspect Evals issue "
+        "[#2331](https://github.com/UKGovernmentBEIS/inspect_evals/issues/2331) was "
+        "opened on 2026-08-31 by **caiotheodoro**, who found that the constant string "
+        '`"yesno"` scores 8000 of 8000 on the `paws` eval, because the eval is scored '
+        "with `includes()` and both labels are substrings of that constant. **That "
+        "finding is theirs, not this project's.** eval-floor generalises it, asking "
+        "the same question mechanically of every task in the collection. A fix is in "
+        "flight: PR "
+        "[#2334](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2334) by "
+        "**jkopczyn** replaces the `paws` and `boolq` scorers with anchored patterns, "
+        "and a maintainer comment from **MattFisher** dated 2026-09-09 calls it "
+        '"merge-ready" -- but it carries no approving GitHub review, it is **not '
+        "merged**, and no release contains it. `paws` in `inspect_evals` "
+        f"{pins.get('inspect_evals')}, the latest release, still reads "
+        "`scorer=includes()`. That is why this repository pins that version: the "
+        "anchor has to run against a version where the behaviour is still present. "
+        "`tests/test_paws_regression.py` reproduces it from committed code."
+    )
+    lines.append("")
+
+    if inventory:
+        lines.append("## Reachability")
+        lines.append("")
+        lines.append(
+            "The denominator comes before the result. Every declared task is either "
+            "swept or excluded with a recorded reason; the full per-task table is in "
+            "[`results/coverage.md`](results/coverage.md)."
+        )
+        lines.append("")
+        lines.append(render_exclusion_table(inventory))
+        lines.append("")
+
+    lines.append("## The battery")
+    lines.append("")
+    lines.append(
+        "Members are defined semantically and written down in the task's own answer "
+        "template when it declares one. Both arms, `raw` and `rendered`, are scored "
+        "and reported, so the effect of that rendering is visible rather than assumed. "
+        "The flag rule uses the rendered arm."
+    )
+    lines.append("")
+    lines.append(render_battery_table())
+    lines.append("")
+    lines.append(
+        "> **Flag rule.** A task is flagged when at least one content-free member "
+        "scores at or above that task's own `majority` baseline **and** strictly "
+        "above zero. `majority` is computed per task from the dataset, never assumed: "
+        "the PAWS test split is 55.8 per cent `No`, so its chance line is 0.558."
+    )
+    lines.append("")
+
+    lines.append("## Instrument defects found so far")
+    lines.append("")
+    lines.append(
+        "Defects are logged, not quietly fixed. What the instrument got wrong is what "
+        "tells a reader how far to trust what it now says. Full write-ups in "
+        "[`INSTRUMENT_LESSONS.md`](INSTRUMENT_LESSONS.md)."
+    )
+    lines.append("")
+    lines.append("| # | defect | what it would have invalidated |")
+    lines.append("|---|---|---|")
+    lines.append(
+        "| 001 | `choice()` tasks were not driven at all: the scorer reads marked "
+        "choices, not completion text | every multiple-choice row; 16 of the first 20 "
+        "tasks use `choice()` |"
+    )
+    lines.append(
+        "| 002 | the flag rule fired on `0 >= 0` when nothing scored at all | turned "
+        "harness failures into findings |"
+    )
+    lines.append(
+        "| 003 | reference baselines could not parse on multiple-choice tasks | the "
+        "chance line the whole flag rule rests on |"
+    )
+    lines.append("")
+
+    lines.append("## Limitations")
+    lines.append("")
+    lines.append("| limitation | what it means for the number |")
+    lines.append("|---|---|")
+    lines.append(
+        "| A flagged task is not a worthless benchmark | a loose scorer inflates a "
+        "number without saying the underlying task is easy. **No claim is made about "
+        "the conclusions of any published paper** that used any of these evals. |"
+    )
+    lines.append(
+        f"| One version pin | everything here is measured on `inspect_ai` "
+        f"{pins.get('inspect_ai')} and `inspect_evals` {pins.get('inspect_evals')}. "
+        "Rows from different versions are never mixed; on any bump the whole sweep "
+        "re-runs. |"
+    )
+    lines.append(
+        "| Deterministic scorers only | model-graded tasks are excluded from this "
+        "number and deferred to a separate arm with its own intervals. The exclusion "
+        "is counted, not hidden. |"
+    )
+    lines.append(
+        "| The rendering rule is a choice | writing a member in the task's answer "
+        "template changes what it scores. Both arms are published so the size of that "
+        "effect is visible, but the headline depends on which arm is preregistered. |"
+    )
+    lines.append(
+        "| Reachability is far below the collection size | most tasks need a "
+        "container, a grader model, a gated dataset or an extra dependency. The "
+        "denominator is published as prominently as the rate. |"
+    )
+    lines.append(
+        "| `echo` on multimodal tasks | where inputs are images, echoing the input "
+        "back is not well defined; such tasks are marked in the coverage file. |"
+    )
+    lines.append("")
+
+    lines.append("## Reproducing it")
+    lines.append("")
+    lines.append("```")
+    lines.append('uv venv && uv pip install -e ".[dev]"')
+    lines.append("pytest                                 # includes the #2331 anchor")
+    lines.append("evalfloor inventory                    # regenerate the task inventory")
+    lines.append("evalfloor check inspect_evals/paws     # exits non-zero")
+    lines.append("evalfloor sweep --first-sweep --out results/")
+    lines.append("evalfloor report                       # regenerates every number here")
+    lines.append("```")
+    lines.append("")
+    lines.append(
+        "Every number in `results/` and in this file is generated. None is typed by "
+        "hand. Judgement calls live in `rulings.jsonl`, one row each, quoting the "
+        "source line they came from, and the report applies that file mechanically. "
+        "`evalfloor sweep` refuses to write a non-smoke result unless "
+        "`PREREGISTRATION.md` is already committed in git history, and it records that "
+        "commit hash in every file it generates."
+    )
+    lines.append("")
+
+    lines.append("## Disclosure")
+    lines.append("")
+    lines.append(
+        "**Built with LLM coding agents (Claude), with the author reviewing every "
+        "number's source.** The harness, the battery definitions and the tests were "
+        "written with Claude Code doing the typing under direction. The design, the "
+        "preregistration, the measurement choices and every claim made about the "
+        "results are the author's, and the anchoring result is checked in as a test "
+        "anyone can run against pinned versions rather than taken on trust."
+    )
+    lines.append("")
+    lines.append("## Licence")
+    lines.append("")
+    lines.append("MIT, (c) 2026 Ebin Babu Thomas.")
+    lines.append("")
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
 # Payload IO
 # --------------------------------------------------------------------------
 
@@ -349,10 +682,15 @@ def floors_from_payload(payload: dict[str, Any]) -> list[TaskFloor]:
     floors: list[TaskFloor] = []
     for row in payload.get("floors", []):
         members = {
-            name: MemberScore(**score) for name, score in (row.get("members") or {}).items()
+            name: MemberScore(**score)
+            for name, score in (row.get("members") or {}).items()
         }
-        data = {k: v for k, v in row.items() if k != "members"}
-        floors.append(TaskFloor(members=members, **data))
+        members_raw = {
+            name: MemberScore(**score)
+            for name, score in (row.get("members_raw") or {}).items()
+        }
+        data = {k: v for k, v in row.items() if k not in ("members", "members_raw")}
+        floors.append(TaskFloor(members=members, members_raw=members_raw, **data))
     floors.sort(key=lambda f: (f.task, f.scorer))
     return floors
 
@@ -362,6 +700,7 @@ def write_all(
     out_dir: pathlib.Path,
     rulings_path: pathlib.Path,
     inventory: Sequence[dict[str, Any]] | None = None,
+    readme_path: pathlib.Path | None = None,
 ) -> list[pathlib.Path]:
     """Regenerate every markdown artifact from a sweep payload. Returns paths."""
     from .rulings import apply_rulings, load_rulings
@@ -375,13 +714,17 @@ def write_all(
     written: list[pathlib.Path] = []
 
     matrix = out_dir / "floor_matrix.md"
-    matrix.write_text(render_matrix(floors_before, floors_after, digest), encoding="utf-8")
+    matrix.write_text(
+        render_matrix(floors_before, floors_after, digest, payload), encoding="utf-8"
+    )
     written.append(matrix)
 
     if inventory is not None:
         coverage = out_dir / "coverage.md"
         coverage.write_text(
-            render_coverage(inventory, payload.get("tasks", []), floors_after, digest),
+            render_coverage(
+                inventory, payload.get("tasks", []), floors_after, digest, payload
+            ),
             encoding="utf-8",
         )
         written.append(coverage)
@@ -389,5 +732,11 @@ def write_all(
     rulings_md = out_dir / "rulings_applied.md"
     rulings_md.write_text(render_rulings(applied, unmatched), encoding="utf-8")
     written.append(rulings_md)
+
+    if readme_path is not None:
+        readme_path.write_text(
+            render_readme(floors_after, inventory, payload), encoding="utf-8"
+        )
+        written.append(readme_path)
 
     return written

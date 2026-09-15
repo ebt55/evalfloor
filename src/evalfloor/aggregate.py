@@ -56,6 +56,8 @@ class MemberScore:
     n_correct: int
     n_scored: int
     applicable: bool
+    arm: str = "rendered"
+    example_completion: str = ""
     not_applicable_reason: str | None = None
     ci_low: float | None = None
     ci_high: float | None = None
@@ -67,7 +69,14 @@ class MemberScore:
 
 @dataclass
 class TaskFloor:
-    """One task, one scorer: the floor under it and whether that floor is flagged."""
+    """One task, one scorer: the floor under it and whether that floor is flagged.
+
+    ``members`` is the **rendered** arm -- the members written in the task's own
+    answer template -- and it is the arm the flag rule reads. ``members_raw`` is
+    the same members written plainly, kept so a reader can see exactly what the
+    rendering rule changed on this task rather than taking it on trust. On a task
+    that declares no answer template the two are identical by construction.
+    """
 
     task: str
     scorer: str
@@ -77,11 +86,17 @@ class TaskFloor:
     majority: float = 0.0
     uniform: float | None = None
     members: dict[str, MemberScore] = field(default_factory=dict)
+    members_raw: dict[str, MemberScore] = field(default_factory=dict)
+    answer_template: str = "bare"
+    majority_raw: float = 0.0
     best_member: str = ""
     best_mean: float = 0.0
+    best_member_raw: str = ""
+    best_mean_raw: float = 0.0
     gap_to_majority: float = 0.0
     flagged: bool = False
     flagged_by: list[str] = field(default_factory=list)
+    flagged_raw: bool = False
     ruling: str | None = None
     ruling_reason: str | None = None
     error: str | None = None
@@ -89,11 +104,12 @@ class TaskFloor:
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
         out["members"] = {k: v.to_dict() for k, v in self.members.items()}
+        out["members_raw"] = {k: v.to_dict() for k, v in self.members_raw.items()}
         return out
 
 
 def _mean_over_seeds(arms: Sequence[ArmResult]) -> MemberScore | None:
-    """Collapse a member's per-seed arms into one score."""
+    """Collapse a member's per-seed arms, within one arm, into one score."""
     if not arms:
         return None
     usable = [a for a in arms if a.applicable]
@@ -101,6 +117,8 @@ def _mean_over_seeds(arms: Sequence[ArmResult]) -> MemberScore | None:
         a = arms[0]
         return MemberScore(
             member=a.member,
+            arm=a.arm,
+            example_completion=a.example_completion,
             mean=0.0,
             n_correct=0,
             n_scored=0,
@@ -114,6 +132,8 @@ def _mean_over_seeds(arms: Sequence[ArmResult]) -> MemberScore | None:
     low, high = wilson_interval(total_correct, total_scored)
     return MemberScore(
         member=usable[0].member,
+        arm=usable[0].arm,
+        example_completion=usable[0].example_completion,
         mean=mean,
         n_correct=total_correct,
         n_scored=total_scored,
@@ -139,11 +159,11 @@ def aggregate_run(run: TaskRun, full_dataset_size: int | None = None) -> list[Ta
 
     floors: list[TaskFloor] = []
     for scorer in run.scorers or ["-"]:
-        by_member: dict[str, list[ArmResult]] = {}
+        buckets: dict[tuple[str, str], list[ArmResult]] = {}
         for arm in run.arms:
             if arm.scorer != scorer:
                 continue
-            by_member.setdefault(arm.member, []).append(arm)
+            buckets.setdefault((arm.arm, arm.member), []).append(arm)
 
         floor = TaskFloor(
             task=run.task,
@@ -151,17 +171,25 @@ def aggregate_run(run: TaskRun, full_dataset_size: int | None = None) -> list[Ta
             n_samples=run.n_samples,
             sampled=bool(full_dataset_size and run.n_samples < full_dataset_size),
             majority_label=run.majority_label,
+            answer_template=run.answer_template,
         )
-        for member, arms in by_member.items():
+        for (arm_name, member), arms in buckets.items():
             score = _mean_over_seeds(arms)
-            if score is not None:
+            if score is None:
+                continue
+            if arm_name == "raw":
+                floor.members_raw[member] = score
+            else:
                 floor.members[member] = score
 
         majority = floor.members.get("majority")
         floor.majority = majority.mean if majority else 0.0
+        majority_raw = floor.members_raw.get("majority")
+        floor.majority_raw = majority_raw.mean if majority_raw else 0.0
         uniform = floor.members.get("uniform")
         floor.uniform = uniform.mean if uniform and uniform.applicable else None
 
+        # The flag rule reads the RENDERED arm. Preregistered.
         content_free = [
             s
             for name, s in floor.members.items()
@@ -178,6 +206,21 @@ def aggregate_run(run: TaskRun, full_dataset_size: int | None = None) -> list[Ta
                 if s.mean >= floor.majority and s.mean > 0.0
             )
             floor.flagged = bool(floor.flagged_by)
+
+        # The raw arm is reported alongside, never used to flag, so that the
+        # effect of the rendering rule on the headline is visible as a number.
+        content_free_raw = [
+            s
+            for name, s in floor.members_raw.items()
+            if name in CONTENT_FREE_NAMES and s.applicable
+        ]
+        if content_free_raw:
+            best_raw = max(content_free_raw, key=lambda s: s.mean)
+            floor.best_member_raw = best_raw.member
+            floor.best_mean_raw = best_raw.mean
+            floor.flagged_raw = any(
+                s.mean >= floor.majority_raw and s.mean > 0.0 for s in content_free_raw
+            )
         floors.append(floor)
     return floors
 
@@ -190,14 +233,21 @@ def aggregate(runs: Iterable[TaskRun]) -> list[TaskFloor]:
     return floors
 
 
-def flag_rate(floors: Sequence[TaskFloor]) -> tuple[int, int]:
+def flag_rate(floors: Sequence[TaskFloor], arm: str = "rendered") -> tuple[int, int]:
     """``(flagged, denominator)`` over tasks that actually produced a result.
 
     The denominator is the count of distinct tasks with at least one scored
     floor, not the count of floors: a task with two scorers is one task.
+
+    ``arm`` selects which arm's flags are counted. "rendered" is the
+    preregistered headline; "raw" is reported beside it so the effect of the
+    rendering rule on the number is itself a published figure.
     """
     scored = {f.task for f in floors if f.error is None and f.members}
-    flagged = {f.task for f in floors if f.error is None and f.flagged}
+    if arm == "raw":
+        flagged = {f.task for f in floors if f.error is None and f.flagged_raw}
+    else:
+        flagged = {f.task for f in floors if f.error is None and f.flagged}
     return len(flagged & scored), len(scored)
 
 
@@ -218,19 +268,24 @@ def sweep_digest(runs: Sequence[TaskRun]) -> str:
                 run.n_distinct_labels,
                 run.majority_label,
                 round(run.majority_share, 12),
+                run.answer_template,
                 run.error,
                 [
                     [
                         a.scorer,
                         a.member,
                         a.seed,
+                        a.arm,
+                        a.example_completion[:200],
                         a.n_scored,
                         a.n_correct,
                         a.n_errors,
                         round(a.score_sum, 9),
                         a.applicable,
                     ]
-                    for a in sorted(run.arms, key=lambda a: (a.scorer, a.member, a.seed))
+                    for a in sorted(
+                        run.arms, key=lambda a: (a.scorer, a.member, a.arm, a.seed)
+                    )
                 ],
             ]
         )

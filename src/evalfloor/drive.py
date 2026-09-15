@@ -23,9 +23,11 @@ from inspect_ai.scorer import Score, Target, value_to_float
 from inspect_ai.solver import TaskState
 
 from .battery import (
+    ARMS,
     BATTERY,
     BatteryMember,
     LabelSet,
+    detect_template,
     normalize_input,
     normalize_target,
 )
@@ -70,12 +72,19 @@ class SampleView:
 
 @dataclass
 class ArmResult:
-    """One (task, scorer, battery member, seed) cell of the matrix."""
+    """One (task, scorer, battery member, seed, arm) cell of the matrix."""
 
     task: str
     scorer: str
     member: str
     seed: int
+    #: "raw" (the member's semantic value written plainly) or "rendered" (the
+    #: same value written in the task's own answer template). The flag rule uses
+    #: the rendered arm; both are recorded so the effect of rendering is visible.
+    arm: str = "rendered"
+    #: The exact completion handed to the scorer, from the first sample. Recorded
+    #: so a reader can see what was actually scored rather than inferring it.
+    example_completion: str = ""
     n_samples: int = 0
     n_scored: int = 0
     n_errors: int = 0
@@ -99,6 +108,8 @@ class ArmResult:
             "scorer": self.scorer,
             "member": self.member,
             "seed": self.seed,
+            "arm": self.arm,
+            "example_completion": self.example_completion[:200],
             "n_samples": self.n_samples,
             "n_scored": self.n_scored,
             "n_errors": self.n_errors,
@@ -120,6 +131,9 @@ class TaskRun:
     n_samples: int = 0
     n_distinct_labels: int = 0
     labels_closed: bool = False
+    #: "choice" when the task's samples carry choices, else "bare". Decides how
+    #: the rendered arm writes label-valued members down.
+    answer_template: str = "bare"
     majority_label: str = ""
     majority_share: float = 0.0
     arms: list[ArmResult] = field(default_factory=list)
@@ -133,6 +147,7 @@ class TaskRun:
             "n_samples": self.n_samples,
             "n_distinct_labels": self.n_distinct_labels,
             "labels_closed": self.labels_closed,
+            "answer_template": self.answer_template,
             "majority_label": self.majority_label,
             "majority_share": self.majority_share,
             "error": self.error,
@@ -257,13 +272,15 @@ async def run_arm(
     seed: int,
     samples: Sequence[SampleView],
     labels: LabelSet,
+    arm: str = "rendered",
 ) -> ArmResult:
-    """Score every sample with one battery member against one scorer."""
+    """Score every sample with one battery member, in one arm, against one scorer."""
     result = ArmResult(
         task=task_name,
         scorer=scorer_name,
         member=member.name,
         seed=seed,
+        arm=arm,
         n_samples=len(samples),
     )
     if not member.applies_to(labels):
@@ -277,11 +294,13 @@ async def run_arm(
     to_float = value_to_float()
     started = time.monotonic()
     for sample in samples:
-        completion = member.completion(sample, labels, seed)
+        completion = member.completion(sample, labels, seed, arm=arm)
         if completion is None:
             result.applicable = False
             result.not_applicable_reason = "member returned no completion for this sample"
             break
+        if not result.example_completion:
+            result.example_completion = completion
         try:
             score = await score_one(scorer, sample, completion)
             value = to_float(score.value)
@@ -329,6 +348,7 @@ async def drive_task_async(
     run.labels_closed = labels.is_closed
     run.majority_label = labels.majority_label
     run.majority_share = labels.majority_share
+    run.answer_template = detect_template(samples[0]).name if samples else "bare"
 
     scorers = getattr(task, "scorer", None) or []
     if not isinstance(scorers, (list, tuple)):
@@ -339,11 +359,12 @@ async def drive_task_async(
     for scorer, name in zip(scorers, names):
         for member in members:
             for seed in member.seeds:
-                run.arms.append(
-                    await run_arm(
-                        task_name, scorer, name, member, seed, samples, labels
+                for arm in ARMS:
+                    run.arms.append(
+                        await run_arm(
+                            task_name, scorer, name, member, seed, samples, labels, arm
+                        )
                     )
-                )
 
     run.elapsed_s = time.monotonic() - started
     return run
