@@ -196,13 +196,27 @@ def scorer_names(task: Any) -> list[str]:
 
 
 def task_samples(task: Any, limit: int | None = None) -> list[SampleView]:
+    """The task's samples, in a deterministic order.
+
+    Several evals shuffle their dataset by default and do not seed the shuffle
+    (``paws`` and ``boolq`` both take ``shuffle: bool = True``). Two calls to the
+    same task function therefore return the same samples in a different order,
+    and any ``--limit`` then takes a *different subset* each run. That breaks the
+    determinism control for reasons that have nothing to do with this harness.
+
+    So the samples are sorted by sample id before the limit is applied. Sorting
+    changes nothing about a full sweep -- every sample is scored either way --
+    and it makes a limited sweep reproducible, which is what the control needs.
+    """
     dataset = getattr(task, "dataset", None)
     if dataset is None:
         return []
     samples = list(dataset)
+    views = [SampleView.from_sample(s, i) for i, s in enumerate(samples)]
+    views.sort(key=lambda v: (str(type(v.id).__name__), str(v.id)))
     if limit is not None:
-        samples = samples[:limit]
-    return [SampleView.from_sample(s, i) for i, s in enumerate(samples)]
+        views = views[:limit]
+    return views
 
 
 def label_set(samples: Sequence[SampleView]) -> LabelSet:

@@ -35,6 +35,17 @@ from .report import (
     write_sweep,
 )
 
+#: The smoke set: five of the preregistered twenty, chosen to cover all five
+#: scorer families that appear in them. Defined here so the command and the
+#: determinism test sweep exactly the same thing.
+SMOKE_TASKS: tuple[str, ...] = (
+    "inspect_evals/sec_qa_v2",  # choice
+    "inspect_evals/gsm8k",  # match(numeric=True)
+    "inspect_evals/boolq",  # pattern
+    "inspect_evals/paws",  # includes
+    "inspect_evals/drop",  # f1
+)
+
 DEFAULT_RESULTS = pathlib.Path("results")
 DEFAULT_RULINGS = pathlib.Path("rulings.jsonl")
 DEFAULT_INVENTORY_JSON = DEFAULT_RESULTS / "task_inventory.json"
@@ -89,6 +100,8 @@ def _resolve_task_list(args: argparse.Namespace) -> list[str]:
         for item in args.tasks:
             names.extend(part for part in item.split(",") if part.strip())
         return [n.strip() for n in names]
+    if getattr(args, "smoke_set", False):
+        return list(SMOKE_TASKS)
     if args.first_sweep:
         from .discover import discover, first_sweep_tasks
 
@@ -101,7 +114,7 @@ def _resolve_task_list(args: argparse.Namespace) -> list[str]:
         else:
             infos = discover(probe=True, cache_path=pathlib.Path(args.out) / "hf_probe_cache.json")
         return [t.name for t in first_sweep_tasks(infos)]
-    raise SystemExit("sweep needs --tasks or --first-sweep")
+    raise SystemExit("sweep needs --tasks, --first-sweep or --smoke-set")
 
 
 # --------------------------------------------------------------------------
@@ -414,6 +427,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_sweep.add_argument("--tasks", nargs="*", help="task names, space or comma separated")
     p_sweep.add_argument(
         "--first-sweep", action="store_true", help="use the preregistered twenty"
+    )
+    p_sweep.add_argument(
+        "--smoke-set",
+        action="store_true",
+        help="use the five-task smoke set (one per scorer family)",
     )
     p_sweep.add_argument("--out", default=str(DEFAULT_RESULTS))
     p_sweep.add_argument("--rulings", default=str(DEFAULT_RULINGS))
