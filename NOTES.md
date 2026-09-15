@@ -154,3 +154,126 @@ Two things worth keeping:
   a task function downloads its dataset. The inventory is therefore built by AST
   over the installed package plus each eval's `eval.yaml`, with the dynamic
   resolution deferred to the sweep itself.
+
+### The inventory, and what is actually reachable
+
+Static discovery over the installed package: **237 tasks** declared across 129
+`eval.yaml` files, all 237 registered in `_registry.py`. (The registry reports
+248 task objects; the difference is task functions not declared in an
+`eval.yaml`.)
+
+The first pass classified 90 scorers as `unknown`, which was too many to publish.
+Two causes, both fixed:
+
+* Some evals build the `Task` in a plain helper and the `@task` function just
+  calls it -- `arc_easy()` returns `arc_task("ARC-Easy")`. Resolution now follows
+  calls up to three levels.
+* Some scorers live outside the eval that uses them -- `aime_scorer` is in
+  `inspect_evals/utils/aime_common.py`. There is now a package-wide AST index,
+  with the eval's own directory taking precedence over it.
+
+After both: **1 unknown** (`cve_bench`). Classification came out at
+`deterministic_custom` 112, `deterministic` 42, `model_graded` 41, `sandbox` 41.
+
+**58 of 237 tasks are reachable**, which is a smaller number than the build guide
+assumed and is itself a result. Exclusions: sandbox 76, extra dependency 49,
+model-graded 27, network 17, gated 7, too large 3.
+
+The gated and size exclusions come from the Hugging Face API, not from trying a
+download and catching the failure -- `/api/datasets/{id}` gives a `gated` flag and
+`/tree/main?recursive=true` gives per-file sizes. That is metadata only, so the
+disk cap is enforced *before* anything is fetched. It excluded `docvqa` (11.27
+GiB), `mmmu_multiple_choice` (3.40 GiB) and `mathvista` (1.63 GiB), and found 7
+gated datasets (`hle`, `lingoly`, `lingoly_too`, `tac`, `tac_welfare`,
+`zerobench`, `zerobench_subquestions`). The probe cache is committed at
+`results/hf_probe_cache.json` so the exclusions are reproducible.
+
+The Hub repository size over-counts, since an eval usually loads one split of
+several. It is used as a conservative upper bound and the generated files say so.
+
+### The twenty, chosen by a rule rather than by hand
+
+`discover.first_sweep_tasks()` implements the selection: simple deterministic
+builtin scorer, reachable, ranked by sample count ascending with ties broken by
+name, at most two tasks per eval directory, first twenty.
+
+The per-directory cap is the only non-obvious part. Without it, `sec_qa`
+(4 variants), `wmdp` (3) and `mmlu` (2) would take a third of the slots with
+near-duplicate rows, and the twenty would be far more correlated than they look.
+
+The rule was written before its output was read, and it lands both `paws` and
+`boolq` -- the two evals named in #2331 and #2334 -- without either being forced
+in. 35,994 samples total, about 1.23 GiB of Hub repositories, five scorer
+families (`choice` x 16, then `match`, `pattern`, `includes`, `f1`).
+
+### Two instrument defects, found by the first smoke sweep
+
+Both are written up properly in `INSTRUMENT_LESSONS.md`. In short:
+
+1. **`choice()` tasks were not being driven at all.** `choice()` does not read
+   the completion; it reads which entries of `state.choices` are marked correct,
+   and only the `multiple_choice()` solver marks them, by parsing `ANSWER: X`
+   after generation. Driving the scorer without that step scored everything zero.
+   Sixteen of the twenty tasks use `choice()`, so shipping this would have
+   produced a headline of roughly "16 of 20 flagged" where every one of the
+   sixteen was an artifact.
+2. **The flag rule fired on `0 >= 0`.** With `majority` at zero, all eight
+   content-free members trivially cleared it, so `sec_qa_v2` reported as flagged
+   by the entire battery at 0.0 per cent each. The rule now also requires the
+   member to score strictly above zero.
+
+A third, caught while fixing the first: the `majority` baseline emitted a bare
+`"C"`, which does not parse as an answer on a multiple-choice task, so the chance
+line itself was zero. Reference baselines are now emitted as `ANSWER: <label>`
+when the sample has choices. **Only the baselines**; content-free members are
+never reformatted. That asymmetry raises the bar a flag has to clear, so it can
+only reduce the flag count.
+
+The mirror question -- whether `all_labels` should also be format-aware, which is
+the exact generalisation of #2331 to multiple-choice -- was **deliberately left
+alone**. Changing it would be constructing an attack rather than measuring a
+floor, and the battery membership was fixed at eight members. It is open question
+8.2 in the preregistration draft and it is the single decision with the most
+effect on the headline. Ebin decides before the real sweep.
+
+### Smoke sweep, 5 of the 20
+
+Not the real sweep. The real sweep waits for the committed preregistration. Five
+tasks chosen to cover all five scorer families present in the twenty.
+
+| task | scorer | n | majority | best content-free | flagged |
+|---|---|---|---|---|---|
+| `sec_qa_v2` | `choice` | 100 | 31.0% | `format_only` 21.0% | no |
+| `gsm8k` | `match` | 1319 | 3.0% | `echo` 2.1% | no |
+| `boolq` | `pattern` | 3270 | 62.2% | `all_labels` 37.8% | no |
+| `paws` | `includes` | 8000 | 55.8% | `all_labels` 100.0% | **yes** |
+| `drop` | `f1` | 9535 | 7.3% | `echo` 2.3% | no |
+
+**1 of 5.** Two things in there are worth noticing early:
+
+* `boolq` is **not** flagged. It already uses `pattern('(Yes|No).?\Z')`, which is
+  end-anchored and tighter than `includes()`. `all_labels` still reaches 37.8 per
+  cent on it -- the constant `"No Yes"` ends in "Yes", so it scores on every
+  sample whose target is Yes -- but 37.8 is below boolq's 62.2 per cent majority
+  line, so the rule does not fire. That is the rule doing its job: a scorer can be
+  loose without a content-free answer beating chance.
+* `format_only` on `choice()` tasks scores about 1/k, as it should: `ANSWER: A`
+  genuinely selects option A. On `sec_qa_v2` that is 21.0 per cent against a 31.0
+  per cent majority line.
+
+**Determinism control passes.** Two independent sweeps, each re-loading datasets:
+same digest `f38b0e4376f5ef27`, and `floor_matrix.md` byte-identical. The
+generated markdown carries no timestamp and no wall-clock timing, precisely so
+that the control can be a plain file comparison.
+
+### Status at end of day 1
+
+* 25 tests pass, including the anchor (9) and the controls (16).
+* `evalfloor check inspect_evals/paws` exits 1; `evalfloor check
+  evalfloor/control_tight` exits 0.
+* `PREREGISTRATION.draft.md` is written and **left uncommitted on purpose**.
+  Ebin reviews it, answers the four open questions in its section 8, and commits
+  it himself as `PREREGISTRATION.md` before any sweep result exists. Two of those
+  four questions change the headline number.
+* Nothing has been pushed. No remote is configured. No issue filed upstream. No
+  eval modified.
