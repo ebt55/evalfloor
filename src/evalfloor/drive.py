@@ -154,7 +154,10 @@ def resolve_task(task_name: str, **task_args: Any) -> Any:
     """
     from inspect_ai._util.registry import registry_create
 
-    import inspect_evals._registry  # noqa: F401  (populates the registry)
+    if task_name.startswith("evalfloor/"):
+        from . import controls  # noqa: F401  (registers the control tasks)
+    else:
+        import inspect_evals._registry  # noqa: F401  (populates the registry)
 
     return registry_create("task", task_name, **task_args)
 

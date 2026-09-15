@@ -25,6 +25,12 @@ dev = [
 [project.scripts]
 evalfloor = "evalfloor.cli:main"
 
+# Registers evalfloor as an Inspect extension package, so the control tasks
+# committed in this repository are addressable as `evalfloor/control_loose`
+# rather than a bare `control_loose` that could collide with anything.
+[project.entry-points.inspect_ai]
+evalfloor = "evalfloor.controls"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
