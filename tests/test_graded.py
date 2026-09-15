@@ -93,13 +93,16 @@ def test_grader_selection_prefers_openai_then_openrouter_then_anthropic(monkeypa
 
 def test_the_default_judge_is_the_cheap_openai_model_from_the_snapshot() -> None:
     judge = GRADERS["openai"]
-    assert judge.model == "openai/gpt-5-nano"
-    assert (judge.price_in_per_mtok, judge.price_out_per_mtok) == (0.05, 0.40)
-    assert judge.price_cached_in_per_mtok == 0.005
+    assert judge.model == "openai/gpt-5.6-luna", (
+        "default judge is luna on MEASURED cost: nano emits ~13x more output per "
+        "grading call, which makes it ~3x dearer for this arm despite a lower "
+        "input price"
+    )
+    assert (judge.price_in_per_mtok, judge.price_out_per_mtok) == (0.20, 1.20)
     assert "F-economy-plan" in judge.price_source, "the price must cite its source"
 
     fallback = GRADERS["openai_fallback"]
-    assert fallback.model == "openai/gpt-5.6-luna"
+    assert fallback.model == "openai/gpt-5-nano"
 
 
 def test_anthropic_is_last_and_is_not_the_default() -> None:
@@ -156,7 +159,7 @@ def test_grader_active_sets_and_restores_the_env(monkeypatch) -> None:
 
     monkeypatch.delenv("INSPECT_EVAL_MODEL", raising=False)
     with grader_active(GRADERS["openai"]):
-        assert os.environ["INSPECT_EVAL_MODEL"] == "openai/gpt-5-nano"
+        assert os.environ["INSPECT_EVAL_MODEL"] == "openai/gpt-5.6-luna"
     assert "INSPECT_EVAL_MODEL" not in os.environ
 
 
@@ -274,12 +277,46 @@ def test_the_cache_guard_does_not_blame_a_prompt_that_was_too_short() -> None:
     )
 
 
-def test_flex_tier_and_provider_pinning_are_requested() -> None:
-    from evalfloor.graded import judge_model_args
+def test_standard_is_the_default_tier_and_flex_is_opt_in() -> None:
+    """Flex is 50% off and ~4 calls/min, which turns the 8,000-call arm into a
+    ~33-hour run for about $0.60. Time is the scarcer resource this week."""
+    from evalfloor.graded import DEFAULT_SERVICE_TIER, judge_model_args
 
-    openai_args = judge_model_args(GRADERS["openai"], "inspect_evals/coconot")
-    assert openai_args["service_tier"] == "flex", "flex is 50% off list"
-    assert openai_args["prompt_cache_key"].endswith("inspect_evals/coconot")
+    assert DEFAULT_SERVICE_TIER == "standard"
+
+    default_args = judge_model_args(GRADERS["openai"], "inspect_evals/coconot")
+    assert "service_tier" not in default_args, "standard is the API default"
+    assert default_args["prompt_cache_key"].endswith("inspect_evals/coconot")
+
+    flex_args = judge_model_args(GRADERS["openai"], "inspect_evals/coconot", "flex")
+    assert flex_args["service_tier"] == "flex"
+
+
+def test_the_wall_clock_projection_is_printed_before_a_run() -> None:
+    from evalfloor.battery import LabelSet
+    from evalfloor.graded import estimate_cost
+
+    samples = [_FakeSample() for _ in range(100)]
+    labels = LabelSet.from_targets(["yes", "no", "no"])
+    members = [m for m in BATTERY if m.name == "empty"]
+
+    fast = estimate_cost(
+        samples, members, labels, GRADERS["openai"], "bare", cap=100, tier="standard"
+    )
+    slow = estimate_cost(
+        samples, members, labels, GRADERS["openai"], "bare", cap=100, tier="flex"
+    )
+    assert slow.projected_minutes > fast.projected_minutes * 2, (
+        "flex must be shown as materially slower, not just cheaper"
+    )
+    assert slow.usd is not None and fast.usd is not None
+    assert slow.usd == pytest.approx(fast.usd * 0.5)
+    assert "standard" in fast.describe()
+    assert "projected wall clock" in fast.describe()
+
+
+def test_provider_pinning_is_requested() -> None:
+    from evalfloor.graded import judge_model_args
 
     pinned = judge_model_args(GRADERS["openrouter"], "inspect_evals/coconot")
     order = pinned["extra_body"]["provider"]["order"]
@@ -514,7 +551,7 @@ def test_the_judge_is_injected_through_each_task_s_own_parameter() -> None:
         assert expected_param in args, f"{task_name}: {expected_param} not injected"
         value = args[expected_param]
         flat = value[0] if isinstance(value, list) else value
-        assert flat == "openai/gpt-5-nano"
+        assert flat == "openai/gpt-5.6-luna"
 
 
 def test_a_task_with_no_grader_parameter_reports_it_rather_than_pretending() -> None:

@@ -122,10 +122,17 @@ PRICE_SOURCE_FILE = (
 #: cache-hit guard must not treat a zero hit rate as a fault.
 OPENAI_CACHE_MIN_TOKENS = 1024
 
-#: Batch and the "flex" service tier are both 50% off list (plan S1). The graded
-#: arm is not latency-sensitive, so flex is the default.
+#: Batch and the "flex" service tier are both 50% off list (plan S1), but flex
+#: is measurably slow: ~4 calls/minute here, which turns an 8,000-call arm into
+#: a ~33-hour run for a saving of about $0.60 on luna. Standard is therefore the
+#: default and flex is opt-in with `--tier flex`, for runs where time is free.
 FLEX_DISCOUNT = 0.5
-SERVICE_TIER = "flex"
+DEFAULT_SERVICE_TIER = "standard"
+SERVICE_TIER = DEFAULT_SERVICE_TIER
+
+#: Calls per minute measured on flex and on standard, for the wall-clock
+#: projection printed before a run. Measured 2026-09-15 on coconot.
+MEASURED_CALLS_PER_MIN = {"flex": 4.0, "standard": 12.7}
 
 #: OpenRouter endpoint pinning: the same GLM weights served by DeepInfra at about
 #: half the canonical rate. Unpinned, you pay canonical.
@@ -136,16 +143,19 @@ OPENROUTER_PIN_PROVIDER = "DeepInfra"
 CACHE_READ_MULTIPLIER = 0.1
 
 GRADERS: dict[str, Grader] = {
-    # Default judge: cheapest first-party OpenAI model on the pricing page. 4x
-    # cheaper in and 3x cheaper out than gpt-5.6-luna. Judging is the one seat
-    # where a small model is defensible, because the rubric does the work.
-    # Verified served via GET /v1/models at construction; falls back to luna.
+    # Default judge, chosen on MEASURED cost rather than list price. gpt-5-nano
+    # is 4x cheaper per input token, but emits ~13x more output per grading call
+    # (277 in / 1,157 out, measured) because it reasons before answering, and
+    # output is the expensive side. luna measures 273 in / 87 out, which makes it
+    # about 3x cheaper for this arm. luna is also the model named in the
+    # complimentary daily-token group for tiers 1-2 (F-economy-plan S2A);
+    # nano's inclusion there is unverified.
     "openai": Grader(
-        model="openai/gpt-5-nano",
+        model="openai/gpt-5.6-luna",
         family="openai",
-        price_in_per_mtok=0.05,
-        price_out_per_mtok=0.40,
-        price_cached_in_per_mtok=0.005,
+        price_in_per_mtok=0.20,
+        price_out_per_mtok=1.20,
+        price_cached_in_per_mtok=0.02,
         price_source=PRICE_SOURCE_FILE,
         is_mock=False,
     ),
@@ -160,14 +170,14 @@ GRADERS: dict[str, Grader] = {
         is_mock=False,
         pin_provider=OPENROUTER_PIN_PROVIDER,
     ),
-    # The incumbent alternative, used when gpt-5-nano is not served. Already
-    # wired in Ebin's harness and already 86.5% cached in his production runs.
+    # Fallback, used only when luna is not served by the account. Still
+    # selectable deliberately with EVALFLOOR_JUDGE=openai/gpt-5-nano.
     "openai_fallback": Grader(
-        model="openai/gpt-5.6-luna",
+        model="openai/gpt-5-nano",
         family="openai",
-        price_in_per_mtok=0.20,
-        price_out_per_mtok=1.20,
-        price_cached_in_per_mtok=0.02,
+        price_in_per_mtok=0.05,
+        price_out_per_mtok=0.40,
+        price_cached_in_per_mtok=0.005,
         price_source=PRICE_SOURCE_FILE,
         is_mock=False,
     ),
@@ -275,7 +285,9 @@ def resolve_openai_judge(preferred: Grader, fallback: Grader) -> tuple[Grader, s
     )
 
 
-def judge_model_args(grader: Grader, task_name: str = "") -> dict[str, Any]:
+def judge_model_args(
+    grader: Grader, task_name: str = "", tier: str = DEFAULT_SERVICE_TIER
+) -> dict[str, Any]:
     """Provider-specific request arguments for this judge.
 
     OpenAI: ``service_tier="flex"`` is 50% off list and the graded arm is not
@@ -287,7 +299,8 @@ def judge_model_args(grader: Grader, task_name: str = "") -> dict[str, Any]:
     """
     args: dict[str, Any] = {}
     if grader.family == "openai" and not grader.is_mock:
-        args["service_tier"] = SERVICE_TIER
+        if tier and tier != "standard":
+            args["service_tier"] = tier
         if task_name:
             args["prompt_cache_key"] = f"evalfloor::{task_name}"
     if grader.pin_provider:
@@ -575,6 +588,9 @@ class CostEstimate:
     cached_input_tokens: int = 0
     #: "automatic", "per-model" or "none" for this grader's provider.
     caching: str = "none"
+    tier: str = DEFAULT_SERVICE_TIER
+    #: Projected wall-clock minutes, from the measured call rate for this tier.
+    projected_minutes: float = 0.0
     usd: float | None = None
     priced: bool = True
     assumptions: list[str] = field(default_factory=list)
@@ -588,6 +604,12 @@ class CostEstimate:
             f"  grading calls      {self.n_calls:,}",
             f"  input tokens       {self.input_tokens:,} (estimated)",
             f"  output tokens      {self.output_tokens:,} (estimated)",
+            f"  service tier       {self.tier}"
+            + (
+                f", projected wall clock {self.projected_minutes / 60:.1f} h"
+                if self.projected_minutes >= 90
+                else f", projected wall clock {self.projected_minutes:.0f} min"
+            ),
             f"  prompt caching     {self.caching}"
             + (
                 f", {self.cached_input_tokens:,} input tokens from cache"
@@ -626,9 +648,11 @@ def estimate_cost(
     answer_template: str,
     cap: int = DEFAULT_CAP,
     already_cached: int = 0,
+    tier: str = DEFAULT_SERVICE_TIER,
 ) -> CostEstimate:
     """Estimate before calling anything. Counts only what is not already cached."""
     est = CostEstimate()
+    est.tier = tier
     capped = list(samples[:cap])
     arms = arms_for_template(answer_template)
 
@@ -702,6 +726,16 @@ def estimate_cost(
             )
         )
 
+    # Wall clock, from the rate measured for this tier. Printed before anything
+    # runs, because "50% off" and "finishes on Thursday" can be incompatible.
+    rate = MEASURED_CALLS_PER_MIN.get(tier, MEASURED_CALLS_PER_MIN["standard"])
+    est.projected_minutes = est.n_calls / rate if rate else 0.0
+    if est.projected_minutes >= 90:
+        est.assumptions.append(
+            f"projected wall clock {est.projected_minutes / 60:.1f} hours at the "
+            f"measured {rate:g} calls/min for tier '{tier}'"
+        )
+
     if grader.price_in_per_mtok is None or grader.price_out_per_mtok is None:
         est.priced = False
         est.usd = None
@@ -720,6 +754,12 @@ def estimate_cost(
             f"price: ${grader.price_in_per_mtok}/MTok in, "
             f"${grader.price_out_per_mtok}/MTok out ({grader.price_source})"
         )
+        if grader.family == "openai" and not grader.is_mock and tier == "flex":
+            est.usd *= FLEX_DISCOUNT
+            est.assumptions.append(
+                f"flex tier: 50% off list, at the cost of {rate:g} calls/min -- "
+                f"{est.projected_minutes / 60:.1f} hours for this run"
+            )
         if grader.family == "openai":
             est.assumptions.append(
                 "OpenAI usage may be complimentary under a data-sharing setting, so "
@@ -1231,6 +1271,7 @@ class UsageMeter:
     output_tokens: int = 0
     cached_input_tokens: int = 0
     first_output: str = ""
+    tier: str = DEFAULT_SERVICE_TIER
 
     def record(self, output: Any) -> None:
         self.calls += 1
@@ -1300,7 +1341,7 @@ class UsageMeter:
             + self.output_tokens / 1_000_000 * grader.price_out_per_mtok
         )
         # Flex / Batch are 50% off list on OpenAI, and this arm uses flex.
-        if grader.family == "openai" and not grader.is_mock:
+        if grader.family == "openai" and not grader.is_mock and self.tier == "flex":
             gross *= FLEX_DISCOUNT
         return gross
 
@@ -1316,7 +1357,7 @@ class UsageMeter:
             out["measured_usd"] = self.cost(grader)
             out["caching"] = caches_prompts(grader)
             out["service_tier"] = (
-                SERVICE_TIER if grader.family == "openai" and not grader.is_mock else None
+                self.tier if grader.family == "openai" and not grader.is_mock else None
             )
             out["pinned_provider"] = grader.pin_provider
             prefix = int(self.input_tokens / self.calls) if self.calls else 0
@@ -1348,13 +1389,15 @@ def metered(model: Any, meter: UsageMeter):
         model.generate = original
 
 
-def judge_model(grader: Grader, task_name: str = "") -> Any:
+def judge_model(
+    grader: Grader, task_name: str = "", tier: str = DEFAULT_SERVICE_TIER
+) -> Any:
     """The judge as a Model object, so its calls can be counted and metered."""
     from inspect_ai.model import get_model
 
     if grader.model == STUB_MODEL:
         return stub_grader_model()
-    args = judge_model_args(grader, task_name)
+    args = judge_model_args(grader, task_name, tier)
     try:
         return get_model(grader.model, **args)
     except TypeError:
@@ -1385,6 +1428,7 @@ async def grade_task_async(
     task: Any | None = None,
     print_estimate: bool = True,
     meter: "UsageMeter | None" = None,
+    tier: str = DEFAULT_SERVICE_TIER,
 ) -> tuple[TaskRun, CostEstimate]:
     """Run the battery over one model-graded task with one judge."""
     members = list(members)
@@ -1399,8 +1443,9 @@ async def grade_task_async(
     run.capped_at = cap
 
     meter = meter if meter is not None else UsageMeter()
+    meter.tier = tier
     with grader_active(grader):
-        model = judge_model(grader, task_name)
+        model = judge_model(grader, task_name, tier)
         task_args = grader_task_args(task_name, grader, model=model)
         run.grader_injected_via = ", ".join(sorted(task_args)) if task_args else ""
         try:
@@ -1451,7 +1496,8 @@ async def grade_task_async(
             for name in names
         )
         estimate = estimate_cost(
-            samples, members, labels, grader, run.answer_template, cap, cached_already
+            samples, members, labels, grader, run.answer_template, cap,
+            cached_already, tier,
         )
         if print_estimate:
             print(f"  cost estimate for {task_name} with {grader.model}:")

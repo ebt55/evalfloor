@@ -11,7 +11,7 @@ The denominator comes before the result. **Every task declared in an `eval.yaml`
 | `inspect_ai` | 0.3.263 |
 | `inspect_evals` | 0.20.0 |
 | battery fingerprint | `b019ebb6ecee` |
-| sweep digest | `3aa812fce32e446f` |
+| sweep digest | `39c2e226c000c75b` |
 
 ## Totals
 

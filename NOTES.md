@@ -660,3 +660,64 @@ Flex latency, measured: roughly **4 calls/minute**, so 140 calls did not finish
 in a 15-minute window and had to be resumed from cache. Standard-tier luna ran
 the same 140 calls in about 11 minutes. For a batch-shaped arm that is still the
 right trade; for an interactive smoke it is not.
+
+---
+
+## 2026-09-15 -- defaults settled on measured evidence
+
+Both defaults flipped, on measurement rather than list price.
+
+**Judge: `openai/gpt-5.6-luna`, fallback `gpt-5-nano`.** nano is 4x cheaper per
+input token and emits ~13x more output per grading call (1,157 vs 87, measured),
+so it is about 3x *dearer* for this arm. luna is also the model named in the
+complimentary daily-token group for tiers 1-2; nano's inclusion there is
+unverified. nano stays selectable with `EVALFLOOR_JUDGE=openai/gpt-5-nano`.
+
+**Tier: `standard`, with flex behind `--tier flex`.** Flex is 50% off and about
+4 calls/min; standard measured 12.7 calls/min. On the 8,000-call arm that is the
+difference between ~10.5 hours and ~33 hours, for a saving of about $0.60 on
+luna. Time is the scarcer resource this week. Every run now prints its projected
+wall clock from the measured rate before it starts.
+
+### The smoke that matches the defaults -- luna, standard tier
+
+140 calls, 38,255 in / 12,252 out, **0 cached (0.0%)**, **$0.0224 measured**,
+2 refusals, 0 unmapped. Projected 11 min, actual ~11 min.
+
+| member | score | 95% CI | corr/n | ref |
+|---|---|---|---|---|
+| empty | 0.0% | [0.0, 27.8] | 0/10 | 0 |
+| whitespace | 0.0% | [0.0, 27.8] | 0/10 | 0 |
+| refusal | 0.0% | [0.0, 27.8] | 0/10 | 0 |
+| all_labels | 0.0% | [0.0, 27.8] | 0/10 | 0 |
+| **all_letters** | **70.0%** | [39.7, 89.2] | 7/10 | 0 |
+| echo | 0.0% | [0.0, 32.4] | 0/8 | 2 |
+| boilerplate | 0.0% | [0.0, 27.8] | 0/10 | 0 |
+| **format_only** | **60.0%** | [31.3, 83.2] | 6/10 | 0 |
+| *majority* | *0.0%* | [0.0, 27.8] | 0/10 | 0 |
+| *uniform* | *0.0%* | [0.0, 7.1] | 0/50 | 0 |
+
+Flagged by `all_letters` and `format_only`, both on the Wilson lower bound.
+
+### Judge disagreement: 10 of 105 = 9.5% [5.3, 16.6]
+
+`openai/gpt-5.6-luna` against `openrouter/z-ai/glm-5.3-flash` pinned to
+DeepInfra, same 10 samples, same battery, compared per item.
+
+9.5% is low enough to be encouraging and high enough to matter: roughly one
+graded cell in ten flips on a change of judge. Any graded number quoted from a
+single judge carries at least that much slack, and the interval on 105 items is
+itself wide. It is also much smaller than the luna-vs-nano gap seen earlier
+(majority 0.0% vs 20.0%), which suggests the earlier spread was nano's verbosity
+and reasoning style rather than genuine cross-lineage disagreement.
+
+### A ruling template that is deliberately inert
+
+`rulings.jsonl` now carries a commented `note` row for `coconot`. It is
+**not applied** -- `load_rulings()` skips `#` lines, verified by test -- because
+the call is Ebin's. Its substance: coconot grades *contextual* noncompliance, so
+on part of that dataset a content-free or non-answering completion **is** the
+behaviour the eval wants. A flag there does not mean "a content-free answer
+scores like a real one"; it means "a content-free answer reads as compliance to
+the judge". Those are different claims and the write-up must not merge them.
+When he uncomments it, the report shows the flag rate with and without.

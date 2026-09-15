@@ -288,6 +288,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         print("=" * 62)
         graded_out = out / "graded"
         graded_args = argparse.Namespace(
+            tier=getattr(args, "tier", "standard"),
             tasks=None,
             limit_tasks=args.graded_limit_tasks,
             out=str(graded_out),
@@ -419,6 +420,7 @@ def run_graded(
                 grade_task_async(
                     name, grader, cap=args.cap, cache=cache,
                     refusals=refusals, budget_usd=args.budget_usd,
+                    tier=getattr(args, "tier", "standard"),
                 )
             )
         except BudgetExceeded as exc:
@@ -444,6 +446,7 @@ def run_graded(
 
     meta: dict[str, Any] = {
         "graded": True,
+        "service_tier": getattr(args, "tier", "standard"),
         "keys_present": keys,
         "grader": grader.to_dict(),
         "cap": args.cap,
@@ -482,6 +485,7 @@ def run_graded(
                 grade_task_async(
                     target, second, cap=args.cap, cache=cache,
                     refusals=refusals, budget_usd=args.budget_usd,
+                    tier=getattr(args, "tier", "standard"),
                 )
             )
             samples = task_samples(resolve_task(target), limit=args.cap)
@@ -583,7 +587,10 @@ def cmd_estimate(args: argparse.Namespace) -> int:
             loaded += 1
             labels = label_set(samples)
             template = detect_template(samples[0]).name if samples else "bare"
-            est = estimate_cost(samples, list(BATTERY), labels, grader, template, args.cap)
+            est = estimate_cost(
+                samples, list(BATTERY), labels, grader, template, args.cap,
+                tier=getattr(args, "tier", "standard"),
+            )
             total_calls += est.n_calls
             total_in += est.input_tokens
             total_out += est.output_tokens
@@ -751,6 +758,16 @@ def add_grader_args(parser: argparse.ArgumentParser, default_budget: float) -> N
     )
     parser.add_argument(
         "--price-out", type=float, default=None, help="USD per MTok output"
+    )
+    parser.add_argument(
+        "--tier",
+        choices=("standard", "flex"),
+        default="standard",
+        help=(
+            "OpenAI service tier. standard (default) is full price and about "
+            "12.7 calls/min; flex is 50%% off and about 4 calls/min, which turns "
+            "the 8,000-call arm into a ~33-hour run"
+        ),
     )
 
 
