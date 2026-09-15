@@ -844,7 +844,52 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def load_local_env(path: pathlib.Path | None = None) -> list[str]:
+    """Load ``.env`` from the working directory, without overriding the environment.
+
+    Returns the **names** of the variables it set. Values are never returned,
+    logged or printed anywhere in this project, and ``.env`` is in ``.gitignore``.
+
+    ``python-dotenv`` is already present as a transitive dependency of
+    ``inspect_ai``; the small fallback parser exists only so that a missing
+    optional package can never stop the CLI from starting.
+
+    ``override=False`` is deliberate: a variable already exported in the shell
+    wins over the file, so a one-off export is never silently overwritten by a
+    stale file.
+    """
+    import os
+
+    path = path or pathlib.Path(".env")
+    if not path.exists():
+        return []
+
+    before = set(os.environ)
+    try:
+        from dotenv import load_dotenv
+
+        load_dotenv(dotenv_path=path, override=False)
+    except Exception:
+        try:
+            for raw in path.read_text(encoding="utf-8").splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                value = value.strip().strip('"').strip("'")
+                if key and key not in os.environ:
+                    os.environ[key] = value
+        except OSError:
+            return []
+    return sorted(set(os.environ) - before)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
+    loaded = load_local_env()
+    if loaded:
+        # Names only. Never values.
+        print(f"loaded from .env: {', '.join(loaded)}")
     parser = build_parser()
     args = parser.parse_args(argv)
     return int(args.func(args))

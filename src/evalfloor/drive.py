@@ -97,6 +97,10 @@ class ArmResult:
     #: emitted nothing that parses as a grade. Neither a score nor an error, and
     #: excluded from the denominator rather than coerced to zero.
     n_ungradeable: int = 0
+    #: Verdicts in an eval's own vocabulary with no committed mapping. Never
+    #: coerced to 0.0; recorded verbatim and excluded. Instrument defect 007.
+    n_unmapped: int = 0
+    unmapped_verdicts: dict[str, int] = field(default_factory=dict)
     score_sum: float = 0.0
     applicable: bool = True
     not_applicable_reason: str | None = None
@@ -131,6 +135,8 @@ class ArmResult:
             "n_correct": self.n_correct,
             "n_refusals": self.n_refusals,
             "n_ungradeable": self.n_ungradeable,
+            "n_unmapped": self.n_unmapped,
+            "unmapped_verdicts": self.unmapped_verdicts,
             "mean": self.mean,
             "applicable": self.applicable,
             "not_applicable_reason": self.not_applicable_reason,
@@ -166,6 +172,10 @@ class TaskRun:
     grader_injected_via: str = ""
     capped_at: int | None = None
     n_refusals: int = 0
+    #: Real token usage read back from the provider, never assumed.
+    measured_usage: dict[str, Any] = field(default_factory=dict)
+    n_unmapped: int = 0
+    unmapped_verdicts: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -184,6 +194,9 @@ class TaskRun:
             "grader_injected_via": self.grader_injected_via,
             "capped_at": self.capped_at,
             "n_refusals": self.n_refusals,
+            "measured_usage": self.measured_usage,
+            "n_unmapped": self.n_unmapped,
+            "unmapped_verdicts": self.unmapped_verdicts,
             "arms": [a.to_dict() for a in self.arms],
         }
 

@@ -56,15 +56,23 @@ from .drive import (
 # Keys and grader selection
 # --------------------------------------------------------------------------
 
-#: Checked in this order. Values are never read into any output.
+#: Checked in this order: **OpenAI first, OpenRouter second, Anthropic last.**
+#: Values are never read into any output -- only the name and a boolean.
 KEY_ENV_VARS: tuple[str, ...] = (
-    "ANTHROPIC_API_KEY",
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
+    "ANTHROPIC_API_KEY",
 )
 
-#: Override the grader entirely, e.g. EVALFLOOR_GRADER=anthropic/claude-haiku-4-5
-GRADER_ENV_VAR = "EVALFLOOR_GRADER"
+#: Override the judge, e.g. EVALFLOOR_JUDGE=openai/gpt-5.6-luna
+JUDGE_ENV_VAR = "EVALFLOOR_JUDGE"
+
+#: Override the second grader used by the judge-disagreement control.
+JUDGE2_ENV_VAR = "EVALFLOOR_JUDGE2"
+
+#: Accepted as a fallback for continuity with the first cut of this module.
+LEGACY_GRADER_ENV_VAR = "EVALFLOOR_GRADER"
+GRADER_ENV_VAR = LEGACY_GRADER_ENV_VAR
 
 
 def detect_keys() -> dict[str, bool]:
@@ -84,41 +92,83 @@ class Grader:
     price_out_per_mtok: float | None
     price_source: str
     is_mock: bool = False
+    #: Price of a cached input token, when the provider publishes one.
+    price_cached_in_per_mtok: float | None = None
+    #: OpenRouter endpoint to pin to, so the cheap provider actually serves it.
+    pin_provider: str | None = None
+    #: Set at construction once the model id is confirmed served.
+    verified_served: bool | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
 
-#: Cheapest current model per family.
+#: Where every model id and price below came from. Not recalled, read.
 #:
-#: The Anthropic price is the Claude Haiku 4.5 row of Anthropic's published
-#: model table ($1.00 in / $5.00 out per MTok), which is the cheapest current
-#: Anthropic model. The others are deliberately left unpriced: this project has
-#: not verified them, and a cost guard built on a guessed price is worse than no
-#: cost guard. Supply --price-in/--price-out to run with one of those.
+#: ``ai-incident-response/dosecurve/analysis/prices.json`` -- the pricing snapshot
+#: Ebin already runs against ("orchestrator-supplied table, 2026-09-13"), and
+#: ``dosecurve/harness/providers/openai_compat.py`` for the provider wiring, the
+#: base URLs and the key env vars. ``gpt-5.6-luna`` is the model that file records
+#: as "Verified live 2026-09-13" and the cheapest of the three OpenAI models in
+#: the snapshot.
+PRICE_SOURCE_FILE = (
+    "profile-update-aug2026/decision-2026-09-15/F-economy-plan.md S1 workload 1 "
+    "(verified 2026-09-15), with ids cross-checked against "
+    "ai-incident-response/dosecurve/analysis/prices.json and harness/providers/"
+)
+
+#: OpenAI will not cache a prefix shorter than this many input tokens (F-economy
+#: plan R4). Below it, caching is impossible -- not merely unlikely -- so the
+#: cache-hit guard must not treat a zero hit rate as a fault.
+OPENAI_CACHE_MIN_TOKENS = 1024
+
+#: Batch and the "flex" service tier are both 50% off list (plan S1). The graded
+#: arm is not latency-sensitive, so flex is the default.
+FLEX_DISCOUNT = 0.5
+SERVICE_TIER = "flex"
+
+#: OpenRouter endpoint pinning: the same GLM weights served by DeepInfra at about
+#: half the canonical rate. Unpinned, you pay canonical.
+OPENROUTER_PIN_PROVIDER = "DeepInfra"
+
+#: Cache reads are billed at this multiple of the input price. From the same
+#: snapshot's ``cache_read_multiplier``.
+CACHE_READ_MULTIPLIER = 0.1
+
 GRADERS: dict[str, Grader] = {
-    "anthropic": Grader(
-        model="anthropic/claude-haiku-4-5",
-        family="anthropic",
-        price_in_per_mtok=1.00,
-        price_out_per_mtok=5.00,
-        price_source="Anthropic published model pricing, cheapest current model",
-        is_mock=False,
-    ),
+    # Default judge: cheapest first-party OpenAI model on the pricing page. 4x
+    # cheaper in and 3x cheaper out than gpt-5.6-luna. Judging is the one seat
+    # where a small model is defensible, because the rubric does the work.
+    # Verified served via GET /v1/models at construction; falls back to luna.
     "openai": Grader(
-        model="openai/gpt-5.5-mini",
+        model="openai/gpt-5-nano",
         family="openai",
-        price_in_per_mtok=None,
-        price_out_per_mtok=None,
-        price_source="not verified by this project; pass --price-in/--price-out",
+        price_in_per_mtok=0.05,
+        price_out_per_mtok=0.40,
+        price_cached_in_per_mtok=0.005,
+        price_source=PRICE_SOURCE_FILE,
         is_mock=False,
     ),
+    # Second grader: cross-lineage by design. Pinned to DeepInfra, which serves
+    # the same weights at about half the canonical Z.ai rate.
     "openrouter": Grader(
-        model="openrouter/anthropic/claude-haiku-4-5",
+        model="openrouter/z-ai/glm-5.3-flash",
         family="openrouter",
-        price_in_per_mtok=None,
-        price_out_per_mtok=None,
-        price_source="not verified by this project; pass --price-in/--price-out",
+        price_in_per_mtok=0.075,
+        price_out_per_mtok=0.25,
+        price_source=PRICE_SOURCE_FILE,
+        is_mock=False,
+        pin_provider=OPENROUTER_PIN_PROVIDER,
+    ),
+    # The incumbent alternative, used when gpt-5-nano is not served. Already
+    # wired in Ebin's harness and already 86.5% cached in his production runs.
+    "openai_fallback": Grader(
+        model="openai/gpt-5.6-luna",
+        family="openai",
+        price_in_per_mtok=0.20,
+        price_out_per_mtok=1.20,
+        price_cached_in_per_mtok=0.02,
+        price_source=PRICE_SOURCE_FILE,
         is_mock=False,
     ),
     "mock": Grader(
@@ -131,69 +181,219 @@ GRADERS: dict[str, Grader] = {
     ),
 }
 
-#: Which key selects which grader, in preference order (cheapest verified first).
+#: The documented alternative second grader, same class, different lineage again.
+ALTERNATIVE_SECOND_GRADER = Grader(
+    model="openrouter/deepseek/deepseek-v4.1-flash",
+    family="openrouter",
+    price_in_per_mtok=0.15,
+    price_out_per_mtok=0.60,
+    price_source=PRICE_SOURCE_FILE,
+    is_mock=False,
+)
+
+#: claude-haiku-4-5 is explicitly NOT a judge for this arm: 14x the nano arm,
+#: and at these prompt lengths nothing caches (4,096-token minimum).
+DO_NOT_USE_AS_JUDGE: frozenset[str] = frozenset(
+    {"anthropic/claude-haiku-4-5", "anthropic/claude-haiku-4-5-20251001"}
+)
+
+#: Which key selects which judge, in preference order.
+#: **OpenAI first, OpenRouter second, Anthropic last.**
 KEY_TO_FAMILY: tuple[tuple[str, str], ...] = (
-    ("ANTHROPIC_API_KEY", "anthropic"),
     ("OPENAI_API_KEY", "openai"),
     ("OPENROUTER_API_KEY", "openrouter"),
 )
 
 #: A second grader from a different family, for the disagreement control.
 DIFFERENT_FAMILY: dict[str, str] = {
-    "anthropic": "openai",
-    "openai": "anthropic",
-    "openrouter": "anthropic",
+    "openai": "openrouter",
+    "openrouter": "openai",
 }
+
+#: Providers whose prompt caching is automatic -- no request field to set, the
+#: provider matches on the prefix and bills the hit at CACHE_READ_MULTIPLIER.
+#: Recorded per call from the response, never assumed: dosecurve's
+#: openai_compat.py already reads ``prompt_tokens_details.cached_tokens`` into
+#: ``cache_read_input_tokens``, and this arm reads the same field.
+AUTOMATIC_CACHE_FAMILIES: frozenset[str] = frozenset({"openai"})
+
+#: Providers where caching is per-model rather than a property of the provider.
+#: Reported through the same field when the routed model supports it, so the
+#: honest thing is to measure it rather than promise it.
+PER_MODEL_CACHE_FAMILIES: frozenset[str] = frozenset({"openrouter"})
 
 
 class NoGraderError(RuntimeError):
     pass
 
 
+def openai_serves(model_id: str, timeout: int = 20) -> bool | None:
+    """Is this model id actually served? ``GET /v1/models``, same check Ebin's
+    harness does at construction (``openai_compat.py:_verify_model``).
+
+    Returns None when the list could not be fetched -- a flaky endpoint must not
+    decide a judge, and the request itself would report a bad id anyway.
+    """
+    import urllib.request
+
+    key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not key:
+        return None
+    bare = model_id.split("/", 1)[-1]
+    request = urllib.request.Request(
+        "https://api.openai.com/v1/models",
+        headers={"Authorization": f"Bearer {key}"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        return None
+    served = {str(m.get("id")) for m in (payload.get("data") or [])}
+    return bare in served if served else None
+
+
+def resolve_openai_judge(preferred: Grader, fallback: Grader) -> tuple[Grader, str]:
+    """``(grader, note)``. Falls back when the preferred id is not served.
+
+    Which one was used is recorded rather than inferred: a silent fallback would
+    put a different model's numbers under the preferred model's name.
+    """
+    from dataclasses import replace
+
+    served = openai_serves(preferred.model)
+    if served is True:
+        return replace(preferred, verified_served=True), f"{preferred.model} served"
+    if served is False:
+        return (
+            replace(fallback, verified_served=True),
+            f"{preferred.model} NOT served by this account; fell back to {fallback.model}",
+        )
+    return (
+        replace(preferred, verified_served=None),
+        f"could not reach GET /v1/models; using {preferred.model} unverified",
+    )
+
+
+def judge_model_args(grader: Grader, task_name: str = "") -> dict[str, Any]:
+    """Provider-specific request arguments for this judge.
+
+    OpenAI: ``service_tier="flex"`` is 50% off list and the graded arm is not
+    latency-sensitive, so it is the default. ``prompt_cache_key`` is set per task
+    (plan R5) so that per-task cache accounting is observable at all.
+
+    OpenRouter: pin the endpoint, because unpinned you pay the canonical rate for
+    the same weights.
+    """
+    args: dict[str, Any] = {}
+    if grader.family == "openai" and not grader.is_mock:
+        args["service_tier"] = SERVICE_TIER
+        if task_name:
+            args["prompt_cache_key"] = f"evalfloor::{task_name}"
+    if grader.pin_provider:
+        args["extra_body"] = {
+            "provider": {
+                "order": [grader.pin_provider],
+                "allow_fallbacks": False,
+            }
+        }
+    return args
+
+
+def _env_spec(*names: str) -> str | None:
+    for name in names:
+        value = os.environ.get(name, "").strip()
+        if value:
+            return value
+    return None
+
+
 def choose_grader(explicit: str | None = None, allow_mock: bool = True) -> Grader:
-    """Pick the judge: explicit argument, then env var, then whichever key exists."""
-    spec = explicit or os.environ.get(GRADER_ENV_VAR, "").strip() or None
+    """Pick the judge: explicit argument, then ``EVALFLOOR_JUDGE``, then keys.
+
+    Key preference is OpenAI, then OpenRouter, then Anthropic.
+    """
+    spec = explicit or _env_spec(JUDGE_ENV_VAR, LEGACY_GRADER_ENV_VAR)
+    if spec and spec in DO_NOT_USE_AS_JUDGE:
+        raise NoGraderError(
+            f"{spec} is excluded as a judge for this arm: about 14x the cost of the "
+            "nano arm, and at these prompt lengths nothing caches (4,096-token "
+            "minimum). See F-economy-plan.md S1 workload 1, row 'do not use'."
+        )
     if spec:
         if spec == STUB_MODEL:
             return GRADERS_STUB
         for grader in GRADERS.values():
             if grader.model == spec:
                 return grader
+        if spec == ALTERNATIVE_SECOND_GRADER.model:
+            return ALTERNATIVE_SECOND_GRADER
         family = spec.split("/", 1)[0]
         return Grader(
             model=spec,
             family=family,
             price_in_per_mtok=None,
             price_out_per_mtok=None,
-            price_source=f"explicitly requested ({GRADER_ENV_VAR} or --grader); price unverified",
+            price_source=(
+                f"explicitly requested ({JUDGE_ENV_VAR} / {JUDGE2_ENV_VAR} or "
+                "--grader); price not in the snapshot, so it must be stated with "
+                "--price-in/--price-out"
+            ),
             is_mock=spec.startswith("mockllm"),
         )
 
     keys = detect_keys()
     for env_name, family in KEY_TO_FAMILY:
         if keys.get(env_name):
+            if family == "openai":
+                grader, note = resolve_openai_judge(
+                    GRADERS["openai"], GRADERS["openai_fallback"]
+                )
+                print(f"  judge verification: {note}")
+                return grader
             return GRADERS[family]
 
     if allow_mock:
         return GRADERS["mock"]
     raise NoGraderError(
-        "no grader available: none of "
+        "no judge available.\n"
+        "\n"
+        "  Checked, in order: "
         + ", ".join(KEY_ENV_VARS)
-        + f" is set, and no {GRADER_ENV_VAR} override was given"
+        + " -- none is set.\n"
+        "\n"
+        f"  Set one of those, or name a judge with {JUDGE_ENV_VAR} (and a second\n"
+        f"  grader for the disagreement control with {JUDGE2_ENV_VAR}).\n"
+        "\n"
+        f"  Defaults when a key is present: {GRADERS['openai'].model} on OpenAI,\n"
+        f"  {GRADERS['openrouter'].model} on OpenRouter,\n"
+        f"  {GRADERS['anthropic'].model} on Anthropic (last resort).\n"
+        "\n"
+        "  To exercise the harness without any provider, use\n"
+        f"  --grader {STUB_MODEL}, which emits a fixed parseable grade and\n"
+        "  is labelled as a non-result everywhere it appears."
     )
 
 
 def choose_second_grader(first: Grader, explicit: str | None = None) -> Grader | None:
-    """A grader from a different family, for the judge-disagreement control."""
-    if explicit:
-        return choose_grader(explicit)
+    """A grader from a different family, for the judge-disagreement control.
+
+    Explicit argument, then ``EVALFLOOR_JUDGE2``, then the preferred different
+    family if its key is present. Returns None rather than silently reusing the
+    first judge -- two runs of the same model is not a disagreement control.
+    """
+    spec = explicit or _env_spec(JUDGE2_ENV_VAR)
+    if spec:
+        return choose_grader(spec)
     keys = detect_keys()
     wanted = DIFFERENT_FAMILY.get(first.family)
     if not wanted:
         return None
     for env_name, family in KEY_TO_FAMILY:
         if family == wanted and keys.get(env_name):
-            return GRADERS[family]
+            candidate = GRADERS[family]
+            if candidate.family != first.family:
+                return candidate
     return None
 
 
@@ -217,7 +417,9 @@ GRADER_PARAM_NAMES: tuple[str, ...] = (
 )
 
 
-def grader_task_args(task_name: str, grader: Grader) -> dict[str, Any]:
+def grader_task_args(
+    task_name: str, grader: Grader, model: Any | None = None
+) -> dict[str, Any]:
     """Task kwargs that point this task's grader at our judge.
 
     Introspects the registered task function and fills every grader-ish
@@ -244,9 +446,12 @@ def grader_task_args(task_name: str, grader: Grader) -> dict[str, Any]:
     except Exception:
         return {}
 
-    # The stub is a Model object, not a spec string: it has to be handed to the
-    # task directly, because no provider would resolve its name.
-    value: Any = stub_grader_model() if grader.model == STUB_MODEL else grader.model
+    # Hand the task a Model object rather than a spec string, so the same object
+    # can be metered: that is how call counts and cached tokens get measured
+    # instead of assumed. (The stub has no provider to resolve its name anyway.)
+    value: Any = model if model is not None else (
+        stub_grader_model() if grader.model == STUB_MODEL else grader.model
+    )
 
     args: dict[str, Any] = {}
     for name, param in sig.parameters.items():
@@ -349,6 +554,9 @@ DEFAULT_CAP = 100
 CHARS_PER_TOKEN = 4.0
 
 #: Tokens the grading template itself contributes, beyond input/target/answer.
+#: This is the **static prefix**: the grading instructions and the eval's own
+#: grade vocabulary. It is identical for every sample of a task, which is exactly
+#: what makes it cacheable -- see `cacheable_prefix_first`.
 TEMPLATE_TOKEN_OVERHEAD = 220
 
 #: Output tokens a grader spends on reasoning plus a GRADE line.
@@ -363,6 +571,10 @@ class CostEstimate:
     n_calls: int = 0
     input_tokens: int = 0
     output_tokens: int = 0
+    #: Input tokens expected to be served from the provider's prompt cache.
+    cached_input_tokens: int = 0
+    #: "automatic", "per-model" or "none" for this grader's provider.
+    caching: str = "none"
     usd: float | None = None
     priced: bool = True
     assumptions: list[str] = field(default_factory=list)
@@ -376,6 +588,12 @@ class CostEstimate:
             f"  grading calls      {self.n_calls:,}",
             f"  input tokens       {self.input_tokens:,} (estimated)",
             f"  output tokens      {self.output_tokens:,} (estimated)",
+            f"  prompt caching     {self.caching}"
+            + (
+                f", {self.cached_input_tokens:,} input tokens from cache"
+                if self.cached_input_tokens
+                else ""
+            ),
         ]
         if self.priced and self.usd is not None:
             lines.append(f"  estimated cost     ${self.usd:,.2f}")
@@ -450,20 +668,171 @@ def estimate_cost(
     est.input_tokens = int(est.input_tokens * SAFETY_MARGIN)
     est.output_tokens = int(est.output_tokens * SAFETY_MARGIN)
 
+    # Prompt caching. The static prefix is the same for every call on a task, so
+    # on a caching provider all but the first call read it from cache at
+    # CACHE_READ_MULTIPLIER of the input price. Only the prefix is cacheable; the
+    # sample text after it is billed in full every time.
+    caching = caches_prompts(grader)
+    est.caching = caching
+    prefix_tokens = int(TEMPLATE_TOKEN_OVERHEAD * SAFETY_MARGIN)
+    if (
+        caching == "automatic"
+        and grader.family == "openai"
+        and prefix_tokens < OPENAI_CACHE_MIN_TOKENS
+    ):
+        # Below OpenAI's minimum nothing caches, so promising a saving here would
+        # be an estimate that cannot come true. Plan rule R4.
+        est.caching = "none (prefix below the provider minimum)"
+        est.assumptions.append(
+            f"no caching assumed: the static prefix is about {prefix_tokens:,} tokens, "
+            f"below OpenAI's {OPENAI_CACHE_MIN_TOKENS:,}-token minimum. Not padded to "
+            "cross it -- filler to win a discount would change what the judge is asked"
+        )
+        caching = "none"
+    if caching != "none" and est.n_calls > 1:
+        prefix = prefix_tokens
+        est.cached_input_tokens = min(est.input_tokens, prefix * (est.n_calls - 1))
+        est.assumptions.append(
+            f"prompt caching {caching}: {est.cached_input_tokens:,} input tokens "
+            f"assumed served from cache at {CACHE_READ_MULTIPLIER:g}x input price"
+            + (
+                " (per-model on this provider, so treat as an upper bound on the saving)"
+                if caching == "per-model"
+                else ""
+            )
+        )
+
     if grader.price_in_per_mtok is None or grader.price_out_per_mtok is None:
         est.priced = False
         est.usd = None
         est.assumptions.append(f"price source: {grader.price_source}")
     else:
+        full_input = max(0, est.input_tokens - est.cached_input_tokens)
         est.usd = (
-            est.input_tokens / 1_000_000 * grader.price_in_per_mtok
+            full_input / 1_000_000 * grader.price_in_per_mtok
+            + est.cached_input_tokens
+            / 1_000_000
+            * grader.price_in_per_mtok
+            * CACHE_READ_MULTIPLIER
             + est.output_tokens / 1_000_000 * grader.price_out_per_mtok
         )
         est.assumptions.append(
             f"price: ${grader.price_in_per_mtok}/MTok in, "
             f"${grader.price_out_per_mtok}/MTok out ({grader.price_source})"
         )
+        if grader.family == "openai":
+            est.assumptions.append(
+                "OpenAI usage may be complimentary under a data-sharing setting, so "
+                "the true cost may be lower than this -- but it is NOT assumed to be "
+                "zero, and this estimate is list price"
+            )
     return est
+
+
+def caches_prompts(grader: Grader) -> str:
+    """How this grader's provider handles prompt caching.
+
+    Returns "automatic", "per-model" or "none". Never claims a cache *hit* --
+    hits are read back from the response and reported as measured, because a
+    promised cache and an observed one are different things.
+    """
+    if grader.is_mock:
+        return "none"
+    if grader.family in AUTOMATIC_CACHE_FAMILIES:
+        return "automatic"
+    if grader.family in PER_MODEL_CACHE_FAMILIES:
+        return "per-model"
+    return "none"
+
+
+def cacheable_prefix_first(instructions: str, vocabulary: str, sample_text: str) -> str:
+    """Order a judge prompt so the cacheable part comes first.
+
+    Prompt caching is prefix-matched: everything before the first byte that
+    varies is reusable, and everything after it is not. So the two parts that are
+    identical for every sample of a task -- the grading instructions and that
+    eval's own grade vocabulary -- go at the front, and the sample goes last.
+    Put the sample first and the cache never hits, however much of the prompt is
+    static.
+
+    Applies only where eval-floor supplies the template. Where an eval brings its
+    own grading template, the prefix is whatever that eval built, and the cache
+    hit rate is reported from the response rather than designed for.
+    """
+    static = "\n\n".join(part for part in (instructions.strip(), vocabulary.strip()) if part)
+    return f"{static}\n\n---\n\n{sample_text.strip()}"
+
+
+# --------------------------------------------------------------------------
+# Verdict vocabularies
+#
+# Instrument defect 007. Graded evals define their own grade vocabularies, and
+# Inspect's generic `value_to_float()` knows only C / P / I / N. Handed anything
+# else it logs "Unable to convert value to float" and returns **0.0** -- so on
+# `coconot` it mapped ACCEPTABLE, UNACCEPTABLE and NEITHER all to zero, silently
+# discarding every credit the judge gave. In an audit whose entire purpose is to
+# find floors that are higher than they look, quietly zeroing positive verdicts
+# is the worst available failure direction.
+#
+# The eval's own converter is not reachable from the built Task (Inspect flattens
+# `epochs` to an int and drops the reducer), so the mapping cannot be read off
+# the object at run time. It is therefore a judgement call, and judgement calls
+# in this project live in a committed file that quotes the source line it came
+# from -- the same pattern as rulings.jsonl.
+#
+# A verdict with no mapping is NEVER coerced to 0.0. It is recorded verbatim as
+# an `unmapped_verdict`, excluded from the denominator, and reported.
+# --------------------------------------------------------------------------
+
+#: Value strings Inspect itself defines, which need no per-eval mapping.
+KNOWN_VALUE_STRINGS: frozenset[str] = frozenset({"C", "P", "I", "N"})
+
+DEFAULT_VERDICT_MAPS_PATH = pathlib.Path("verdict_maps.jsonl")
+
+
+def load_verdict_maps(path: pathlib.Path | None = None) -> dict[str, dict[str, float]]:
+    """Read the committed per-eval verdict vocabulary map."""
+    path = path or DEFAULT_VERDICT_MAPS_PATH
+    maps: dict[str, dict[str, float]] = {}
+    if not path.exists():
+        return maps
+    for raw in path.read_text(encoding="utf-8").splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        task = row.get("task")
+        mapping = row.get("map")
+        if not task or not isinstance(mapping, dict):
+            continue
+        if not row.get("source"):
+            raise ValueError(
+                f"{path}: verdict map for {task} has no `source`. Every mapping must "
+                "quote the eval source line it was read from."
+            )
+        maps[task] = {str(k).strip().lower(): float(v) for k, v in mapping.items()}
+    return maps
+
+
+def map_verdict(
+    value: Any, task_name: str, maps: dict[str, dict[str, float]]
+) -> tuple[float | None, str]:
+    """``(score, raw)``. ``None`` means unmapped -- never silently zero."""
+    raw = "" if value is None else str(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value), raw
+    if raw in KNOWN_VALUE_STRINGS:
+        from inspect_ai.scorer import value_to_float
+
+        return value_to_float()(value), raw
+    mapping = maps.get(task_name) or {}
+    key = raw.strip().lower()
+    if key in mapping:
+        return mapping[key], raw
+    return None, raw
 
 
 class BudgetExceeded(RuntimeError):
@@ -680,9 +1049,12 @@ async def run_graded_arm(
     grader: Grader,
     cache: GradedCache,
     refusals: RefusalLog,
+    verdict_maps: dict[str, dict[str, float]] | None = None,
 ) -> ArmResult:
     """One (member, seed, arm) over capped samples, cached, refusals recorded."""
     from inspect_ai.scorer import value_to_float
+
+    verdict_maps = verdict_maps if verdict_maps is not None else {}
 
     result = ArmResult(
         task=task_name,
@@ -722,6 +1094,12 @@ async def run_graded_arm(
                 continue
             if cached.get("ungradeable"):
                 result.n_ungradeable += 1
+                continue
+            if cached.get("unmapped_verdict") is not None:
+                verdict = str(cached["unmapped_verdict"])
+                result.n_unmapped += 1
+                result.unmapped_verdicts.setdefault(verdict, 0)
+                result.unmapped_verdicts[verdict] += 1
                 continue
             if cached.get("error"):
                 result.n_errors += 1
@@ -769,8 +1147,26 @@ async def run_graded_arm(
             continue
 
         explanation = getattr(score, "explanation", "") or ""
-        value = to_float(score.value)
         snapshot = _snapshot_from_score(score, grader)
+
+        mapped, raw_verdict = map_verdict(score.value, task_name, verdict_maps)
+        if mapped is None:
+            # Defect 007: an eval-specific verdict with no committed mapping.
+            # Recorded verbatim and excluded, never coerced to 0.0.
+            result.n_unmapped += 1
+            result.unmapped_verdicts.setdefault(raw_verdict, 0)
+            result.unmapped_verdicts[raw_verdict] += 1
+            cache.put(
+                key,
+                {
+                    "unmapped_verdict": raw_verdict,
+                    "grader_model": grader.model,
+                    "grader_snapshot": snapshot,
+                    "explanation": explanation[:2000],
+                },
+            )
+            continue
+        value = mapped
 
         if not math.isfinite(value):
             # The grader answered, but emitted nothing that parses as a grade.
@@ -809,6 +1205,7 @@ async def run_graded_arm(
             key,
             {
                 "value": value,
+                "raw_verdict": raw_verdict,
                 "grader_model": grader.model,
                 "grader_snapshot": snapshot,
                 "explanation": explanation[:2000],
@@ -817,6 +1214,153 @@ async def run_graded_arm(
 
     result.elapsed_s = time.monotonic() - started
     return result
+
+
+@dataclass
+class UsageMeter:
+    """Real token usage, read back from the provider rather than assumed.
+
+    Wraps the judge's ``generate`` so every call is counted along with the
+    cached-input tokens the provider reports. That is the only honest way to say
+    whether prompt caching actually happened: a provider that documents caching
+    and a provider that served a cache hit are different claims.
+    """
+
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cached_input_tokens: int = 0
+    first_output: str = ""
+
+    def record(self, output: Any) -> None:
+        self.calls += 1
+        if not self.first_output:
+            self.first_output = (getattr(output, "completion", "") or "")[:300]
+        usage = getattr(output, "usage", None)
+        if usage is None:
+            return
+        self.input_tokens += int(getattr(usage, "input_tokens", 0) or 0)
+        self.output_tokens += int(getattr(usage, "output_tokens", 0) or 0)
+        # Inspect surfaces the provider's cache-read count here when it has one.
+        for attr in ("input_tokens_cache_read", "cache_read_input_tokens"):
+            value = getattr(usage, attr, None)
+            if value:
+                self.cached_input_tokens += int(value)
+                break
+
+    @property
+    def cache_hit_share(self) -> float:
+        """Share of input tokens served from cache. 0.0 when nothing cached."""
+        if self.input_tokens <= 0:
+            return 0.0
+        return self.cached_input_tokens / self.input_tokens
+
+    def cache_verdict(self, grader: Grader, prefix_tokens: int) -> str:
+        """Why the cache hit rate is what it is. Never blames a provider for a
+        prompt that was always too short to cache."""
+        if grader.is_mock or caches_prompts(grader) == "none":
+            return "not applicable: this provider does not cache at this tier"
+        if grader.family == "openai" and prefix_tokens < OPENAI_CACHE_MIN_TOKENS:
+            return (
+                f"expected zero: the static prefix is about {prefix_tokens:,} tokens, "
+                f"below OpenAI's {OPENAI_CACHE_MIN_TOKENS:,}-token minimum. Not padded "
+                "to cross it -- padding a rubric with filler to win a discount would "
+                "change what the judge is asked"
+            )
+        if self.cached_input_tokens == 0:
+            return (
+                "ZERO on a prompt that should cache -- investigate before a full run"
+            )
+        return f"{100 * self.cache_hit_share:.1f}% of input tokens served from cache"
+
+    def should_abort(self, grader: Grader, prefix_tokens: int, first_n: int = 20) -> bool:
+        """Abort a real run when a prompt that *should* cache is not caching.
+
+        Only fires where caching was actually possible: below the provider
+        minimum a zero hit rate is arithmetic, not a fault.
+        """
+        if grader.is_mock or caches_prompts(grader) != "automatic":
+            return False
+        if prefix_tokens < OPENAI_CACHE_MIN_TOKENS:
+            return False
+        return self.calls >= first_n and self.cached_input_tokens == 0
+
+    def cost(self, grader: Grader) -> float | None:
+        if grader.price_in_per_mtok is None or grader.price_out_per_mtok is None:
+            return None
+        full_in = max(0, self.input_tokens - self.cached_input_tokens)
+        cached_rate = (
+            grader.price_cached_in_per_mtok
+            if grader.price_cached_in_per_mtok is not None
+            else grader.price_in_per_mtok * CACHE_READ_MULTIPLIER
+        )
+        gross = (
+            full_in / 1_000_000 * grader.price_in_per_mtok
+            + self.cached_input_tokens / 1_000_000 * cached_rate
+            + self.output_tokens / 1_000_000 * grader.price_out_per_mtok
+        )
+        # Flex / Batch are 50% off list on OpenAI, and this arm uses flex.
+        if grader.family == "openai" and not grader.is_mock:
+            gross *= FLEX_DISCOUNT
+        return gross
+
+    def to_dict(self, grader: Grader | None = None) -> dict[str, Any]:
+        out = {
+            "calls": self.calls,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "cached_input_tokens": self.cached_input_tokens,
+            "cache_hit_share": round(self.cache_hit_share, 4),
+        }
+        if grader is not None:
+            out["measured_usd"] = self.cost(grader)
+            out["caching"] = caches_prompts(grader)
+            out["service_tier"] = (
+                SERVICE_TIER if grader.family == "openai" and not grader.is_mock else None
+            )
+            out["pinned_provider"] = grader.pin_provider
+            prefix = int(self.input_tokens / self.calls) if self.calls else 0
+            out["mean_input_tokens_per_call"] = prefix
+            out["cache_verdict"] = self.cache_verdict(grader, prefix)
+        return out
+
+
+@contextlib.contextmanager
+def metered(model: Any, meter: UsageMeter):
+    """Count real generate() calls on a Model object for the duration."""
+    original = getattr(model, "generate", None)
+    if original is None:
+        yield
+        return
+
+    async def counting(*args: Any, **kwargs: Any) -> Any:
+        output = await original(*args, **kwargs)
+        try:
+            meter.record(output)
+        except Exception:
+            meter.calls += 1
+        return output
+
+    model.generate = counting
+    try:
+        yield
+    finally:
+        model.generate = original
+
+
+def judge_model(grader: Grader, task_name: str = "") -> Any:
+    """The judge as a Model object, so its calls can be counted and metered."""
+    from inspect_ai.model import get_model
+
+    if grader.model == STUB_MODEL:
+        return stub_grader_model()
+    args = judge_model_args(grader, task_name)
+    try:
+        return get_model(grader.model, **args)
+    except TypeError:
+        # A provider that will not take one of these arguments still grades; it
+        # just grades at list price, and the results file says which.
+        return get_model(grader.model)
 
 
 def _snapshot_from_score(score: Any, grader: Grader) -> str:
@@ -840,11 +1384,13 @@ async def grade_task_async(
     budget_usd: float | None = None,
     task: Any | None = None,
     print_estimate: bool = True,
+    meter: "UsageMeter | None" = None,
 ) -> tuple[TaskRun, CostEstimate]:
     """Run the battery over one model-graded task with one judge."""
     members = list(members)
     cache = cache or GradedCache.load(pathlib.Path("results/graded_cache.jsonl"))
     refusals = refusals or RefusalLog(pathlib.Path("results/refusals.jsonl"))
+    verdict_maps = load_verdict_maps()
 
     started = time.monotonic()
     run = TaskRun(task=task_name)
@@ -852,8 +1398,10 @@ async def grade_task_async(
     run.grader_snapshot = grader.model
     run.capped_at = cap
 
+    meter = meter if meter is not None else UsageMeter()
     with grader_active(grader):
-        task_args = grader_task_args(task_name, grader)
+        model = judge_model(grader, task_name)
+        task_args = grader_task_args(task_name, grader, model=model)
         run.grader_injected_via = ", ".join(sorted(task_args)) if task_args else ""
         try:
             if task is None:
@@ -911,18 +1459,28 @@ async def grade_task_async(
         if budget_usd is not None:
             enforce_budget(estimate, budget_usd, grader)
 
-        for scorer, name in zip(scorers, names):
-            for member in members:
-                for seed in member.seeds:
-                    for arm in arms:
-                        run.arms.append(
-                            await run_graded_arm(
-                                task_name, scorer, name, member, seed, arm,
-                                samples, labels, grader, cache, refusals,
+        with metered(model, meter):
+            for scorer, name in zip(scorers, names):
+                for member in members:
+                    for seed in member.seeds:
+                        for arm in arms:
+                            run.arms.append(
+                                await run_graded_arm(
+                                    task_name, scorer, name, member, seed, arm,
+                                    samples, labels, grader, cache, refusals,
+                                    verdict_maps,
+                                )
                             )
-                        )
 
     run.n_refusals = sum(a.n_refusals for a in run.arms)
+    run.n_unmapped = sum(a.n_unmapped for a in run.arms)
+    unmapped: dict[str, int] = {}
+    for a in run.arms:
+        for verdict, n in a.unmapped_verdicts.items():
+            unmapped[verdict] = unmapped.get(verdict, 0) + n
+    run.unmapped_verdicts = unmapped
+    run.measured_usage = meter.to_dict(grader)
+    run.grader_snapshot = meter.first_output[:0] or grader.model
     run.elapsed_s = time.monotonic() - started
     return run, estimate
 

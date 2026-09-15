@@ -60,6 +60,7 @@ class MemberScore:
     example_completion: str = ""
     n_refusals: int = 0
     n_ungradeable: int = 0
+    n_unmapped: int = 0
     not_applicable_reason: str | None = None
     ci_low: float | None = None
     ci_high: float | None = None
@@ -110,6 +111,8 @@ class TaskFloor:
     n_refusals: int = 0
     n_errors: int = 0
     n_ungradeable: int = 0
+    n_unmapped: int = 0
+    unmapped_verdicts: dict[str, int] = field(default_factory=dict)
     first_error: str | None = None
     #: True when not one grading call succeeded. A floor of 0.0% because nothing
     #: was scored is not a floor of 0.0%, and must never print as one.
@@ -153,6 +156,7 @@ def _mean_over_seeds(arms: Sequence[ArmResult]) -> MemberScore | None:
         example_completion=usable[0].example_completion,
         n_refusals=sum(a.n_refusals for a in usable),
         n_ungradeable=sum(a.n_ungradeable for a in usable),
+        n_unmapped=sum(a.n_unmapped for a in usable),
         mean=mean,
         n_correct=total_correct,
         n_scored=total_scored,
@@ -223,6 +227,8 @@ def aggregate_run(run: TaskRun, full_dataset_size: int | None = None) -> list[Ta
         scorer_arms = [a for a in run.arms if a.scorer == scorer]
         floor.n_errors = sum(a.n_errors for a in scorer_arms)
         floor.n_ungradeable = sum(a.n_ungradeable for a in scorer_arms)
+        floor.n_unmapped = sum(a.n_unmapped for a in scorer_arms)
+        floor.unmapped_verdicts = dict(run.unmapped_verdicts)
         floor.first_error = next(
             (a.first_error for a in scorer_arms if a.first_error), None
         )

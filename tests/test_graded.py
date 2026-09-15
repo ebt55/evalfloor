@@ -69,44 +69,94 @@ def test_detect_keys_returns_only_booleans() -> None:
     assert all(isinstance(v, bool) for v in keys.values())
 
 
-def test_grader_selection_prefers_anthropic_then_openai(monkeypatch) -> None:
-    monkeypatch.delenv("EVALFLOOR_GRADER", raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-    monkeypatch.setenv("OPENAI_API_KEY", "y")
-    assert choose_grader().family == "anthropic"
+def _clear_judge_env(monkeypatch) -> None:
+    for name in ("EVALFLOOR_JUDGE", "EVALFLOOR_JUDGE2", "EVALFLOOR_GRADER"):
+        monkeypatch.delenv(name, raising=False)
 
-    monkeypatch.delenv("ANTHROPIC_API_KEY")
+
+def test_grader_selection_prefers_openai_then_openrouter_then_anthropic(monkeypatch) -> None:
+    """Ebin's order: OpenAI first, OpenRouter second, Anthropic last."""
+    _clear_judge_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "y")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "z")
     assert choose_grader().family == "openai"
 
     monkeypatch.delenv("OPENAI_API_KEY")
-    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    assert choose_grader().family == "openrouter"
+
+    monkeypatch.delenv("OPENROUTER_API_KEY")
+    # Anthropic is not a judge for this arm at all, so with neither of the two
+    # supported keys we fall to the stub rather than to Anthropic.
     assert choose_grader().is_mock is True
 
 
-def test_env_var_overrides_key_detection(monkeypatch) -> None:
+def test_the_default_judge_is_the_cheap_openai_model_from_the_snapshot() -> None:
+    judge = GRADERS["openai"]
+    assert judge.model == "openai/gpt-5-nano"
+    assert (judge.price_in_per_mtok, judge.price_out_per_mtok) == (0.05, 0.40)
+    assert judge.price_cached_in_per_mtok == 0.005
+    assert "F-economy-plan" in judge.price_source, "the price must cite its source"
+
+    fallback = GRADERS["openai_fallback"]
+    assert fallback.model == "openai/gpt-5.6-luna"
+
+
+def test_anthropic_is_last_and_is_not_the_default() -> None:
+    from evalfloor.graded import DO_NOT_USE_AS_JUDGE, KEY_ENV_VARS, KEY_TO_FAMILY
+
+    assert KEY_ENV_VARS[0] == "OPENAI_API_KEY"
+    assert KEY_ENV_VARS[1] == "OPENROUTER_API_KEY"
+    assert [f for _, f in KEY_TO_FAMILY] == ["openai", "openrouter"]
+    assert "anthropic/claude-haiku-4-5-20251001" in DO_NOT_USE_AS_JUDGE
+
+
+def test_judge_env_var_overrides_key_detection(monkeypatch) -> None:
+    _clear_judge_env(monkeypatch)
     monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-    monkeypatch.setenv("EVALFLOOR_GRADER", "openai/some-cheap-model")
+    monkeypatch.setenv("EVALFLOOR_JUDGE", "openai/some-unlisted-model")
     grader = choose_grader()
-    assert grader.model == "openai/some-cheap-model"
+    assert grader.model == "openai/some-unlisted-model"
     assert grader.price_in_per_mtok is None, "an unknown model must not get a made-up price"
 
 
+def test_judge2_env_var_selects_the_second_grader(monkeypatch) -> None:
+    _clear_judge_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("EVALFLOOR_JUDGE2", "openrouter/deepseek/deepseek-v4.1-flash")
+    second = choose_second_grader(choose_grader())
+    assert second is not None
+    assert second.model == "openrouter/deepseek/deepseek-v4.1-flash"
+    assert second.price_in_per_mtok == 0.15, "the documented alternative keeps its price"
+
+
 def test_second_grader_comes_from_a_different_family(monkeypatch) -> None:
-    monkeypatch.delenv("EVALFLOOR_GRADER", raising=False)
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "x")
-    monkeypatch.setenv("OPENAI_API_KEY", "y")
+    _clear_judge_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "y")
     first = choose_grader()
     second = choose_second_grader(first)
     assert second is not None
     assert second.family != first.family
+    assert second.model == "openrouter/z-ai/glm-5.3-flash"
+    assert second.pin_provider == "DeepInfra", "unpinned pays the canonical rate"
+
+
+def test_no_second_grader_rather_than_reusing_the_first(monkeypatch) -> None:
+    """Two runs of the same model is not a disagreement control."""
+    _clear_judge_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "x")
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    assert choose_second_grader(choose_grader()) is None
 
 
 def test_grader_active_sets_and_restores_the_env(monkeypatch) -> None:
     import os
 
     monkeypatch.delenv("INSPECT_EVAL_MODEL", raising=False)
-    with grader_active(GRADERS["anthropic"]):
-        assert os.environ["INSPECT_EVAL_MODEL"] == "anthropic/claude-haiku-4-5"
+    with grader_active(GRADERS["openai"]):
+        assert os.environ["INSPECT_EVAL_MODEL"] == "openai/gpt-5-nano"
     assert "INSPECT_EVAL_MODEL" not in os.environ
 
 
@@ -119,22 +169,155 @@ def test_budget_refuses_when_the_estimate_is_too_high() -> None:
     est = CostEstimate(n_calls=10_000, input_tokens=10_000_000, output_tokens=2_000_000)
     est.usd = 20.0
     with pytest.raises(BudgetExceeded, match="exceeds"):
-        enforce_budget(est, budget_usd=5.0, grader=GRADERS["anthropic"])
+        enforce_budget(est, budget_usd=5.0, grader=GRADERS["openai"])
 
 
-def test_budget_refuses_when_the_grader_has_no_verified_price() -> None:
-    """A cost guard built on a guessed price is worse than no cost guard."""
+def test_budget_refuses_when_the_grader_has_no_verified_price(monkeypatch) -> None:
+    """A cost guard built on a guessed price is worse than no cost guard.
+
+    Uses a model genuinely absent from the snapshot, so the refusal comes from
+    the grader having no price rather than from a flag set by hand.
+    """
+    _clear_judge_env(monkeypatch)
+    monkeypatch.setenv("EVALFLOOR_JUDGE", "openai/some-model-not-in-the-snapshot")
+    unpriced = choose_grader()
+    assert unpriced.price_in_per_mtok is None
+
     est = CostEstimate(n_calls=10, input_tokens=1000, output_tokens=200)
     est.priced = False
     est.usd = None
     with pytest.raises(BudgetExceeded, match="no verified price"):
-        enforce_budget(est, budget_usd=1000.0, grader=GRADERS["openai"])
+        enforce_budget(est, budget_usd=1000.0, grader=unpriced)
+
+
+# --------------------------------------------------------------------------
+# Prompt caching
+# --------------------------------------------------------------------------
+
+
+def test_caching_support_is_declared_per_provider() -> None:
+    from evalfloor.graded import caches_prompts
+
+    assert caches_prompts(GRADERS["openai"]) == "automatic"
+    assert caches_prompts(GRADERS["openrouter"]) == "per-model"
+    assert caches_prompts(GRADERS["openai_fallback"]) == "automatic"
+    assert caches_prompts(GRADERS["mock"]) == "none"
+
+
+def test_the_cacheable_part_of_a_judge_prompt_comes_first() -> None:
+    """Caching is prefix-matched: sample first means the cache never hits."""
+    from evalfloor.graded import cacheable_prefix_first
+
+    prompt = cacheable_prefix_first(
+        "Grade the answer against the criterion.",
+        "Reply ACCEPTABLE or UNACCEPTABLE.",
+        "Question: what is the capital of France?",
+    )
+    static_end = prompt.index("---")
+    assert prompt.index("Grade the answer") < static_end
+    assert prompt.index("ACCEPTABLE") < static_end
+    assert prompt.index("capital of France") > static_end
+
+
+class _FakeSample:
+    id = 1
+    input = "a question " * 40
+    target = "yes"
+    choices = None
+
+    @property
+    def input_text(self) -> str:
+        return self.input
+
+    @property
+    def target_text(self) -> str:
+        return self.target
+
+
+def test_the_estimate_promises_no_cache_saving_below_the_provider_minimum() -> None:
+    """OpenAI will not cache a prefix under 1,024 tokens (plan rule R4).
+
+    The judge prompts here are far shorter, so an estimate that banked a cache
+    discount would be promising a saving it cannot get. Measured on the real
+    run: 0 cached tokens across 140 calls.
+    """
+    from evalfloor.battery import LabelSet
+    from evalfloor.graded import OPENAI_CACHE_MIN_TOKENS, TEMPLATE_TOKEN_OVERHEAD, estimate_cost
+
+    assert TEMPLATE_TOKEN_OVERHEAD < OPENAI_CACHE_MIN_TOKENS
+
+    samples = [_FakeSample() for _ in range(20)]
+    labels = LabelSet.from_targets(["yes", "no", "no"])
+    members = [m for m in BATTERY if m.name == "empty"]
+
+    est = estimate_cost(samples, members, labels, GRADERS["openai"], "bare", cap=20)
+    assert est.caching.startswith("none"), "must not bank a saving it cannot get"
+    assert est.cached_input_tokens == 0
+    assert any("below OpenAI" in a for a in est.assumptions)
+    assert any("Not padded" in a for a in est.assumptions), (
+        "the file must say it refused to pad the rubric to win the discount"
+    )
+
+
+def test_the_cache_guard_does_not_blame_a_prompt_that_was_too_short() -> None:
+    from evalfloor.graded import OPENAI_CACHE_MIN_TOKENS, UsageMeter
+
+    meter = UsageMeter(calls=40, input_tokens=10_000, cached_input_tokens=0)
+    short = OPENAI_CACHE_MIN_TOKENS - 1
+    assert meter.should_abort(GRADERS["openai"], short) is False
+    assert "expected zero" in meter.cache_verdict(GRADERS["openai"], short)
+
+    long_enough = OPENAI_CACHE_MIN_TOKENS + 1
+    assert meter.should_abort(GRADERS["openai"], long_enough) is True
+    assert "ZERO on a prompt that should cache" in meter.cache_verdict(
+        GRADERS["openai"], long_enough
+    )
+
+
+def test_flex_tier_and_provider_pinning_are_requested() -> None:
+    from evalfloor.graded import judge_model_args
+
+    openai_args = judge_model_args(GRADERS["openai"], "inspect_evals/coconot")
+    assert openai_args["service_tier"] == "flex", "flex is 50% off list"
+    assert openai_args["prompt_cache_key"].endswith("inspect_evals/coconot")
+
+    pinned = judge_model_args(GRADERS["openrouter"], "inspect_evals/coconot")
+    order = pinned["extra_body"]["provider"]["order"]
+    assert order == ["DeepInfra"], "unpinned pays the canonical rate"
+    assert pinned["extra_body"]["provider"]["allow_fallbacks"] is False
+
+
+def test_haiku_is_refused_as_a_judge(monkeypatch) -> None:
+    from evalfloor.graded import NoGraderError
+
+    _clear_judge_env(monkeypatch)
+    monkeypatch.setenv("EVALFLOOR_JUDGE", "anthropic/claude-haiku-4-5-20251001")
+    with pytest.raises(NoGraderError, match="excluded as a judge"):
+        choose_grader()
+
+
+def test_openai_estimate_says_the_true_cost_may_be_lower_but_not_zero() -> None:
+    from evalfloor.battery import LabelSet
+    from evalfloor.graded import estimate_cost
+
+    est = estimate_cost(
+        [_FakeSample()],
+        [m for m in BATTERY if m.name == "empty"],
+        LabelSet.from_targets(["yes", "no", "no"]),
+        GRADERS["openai"],
+        "bare",
+        cap=1,
+    )
+    note = " ".join(est.assumptions)
+    assert "complimentary" in note
+    assert "NOT assumed to be zero" in note
+    assert est.usd is not None and est.usd > 0.0
 
 
 def test_budget_allows_a_run_inside_it() -> None:
     est = CostEstimate(n_calls=10, input_tokens=1000, output_tokens=200)
     est.usd = 0.01
-    enforce_budget(est, budget_usd=5.0, grader=GRADERS["anthropic"])
+    enforce_budget(est, budget_usd=5.0, grader=GRADERS["openai"])
 
 
 def test_mock_grader_is_exempt_from_the_budget() -> None:
@@ -327,15 +510,15 @@ def test_the_judge_is_injected_through_each_task_s_own_parameter() -> None:
         "inspect_evals/fortress_benign": "grader_model",
     }
     for task_name, expected_param in cases.items():
-        args = grader_task_args(task_name, GRADERS["anthropic"])
+        args = grader_task_args(task_name, GRADERS["openai"])
         assert expected_param in args, f"{task_name}: {expected_param} not injected"
         value = args[expected_param]
         flat = value[0] if isinstance(value, list) else value
-        assert flat == "anthropic/claude-haiku-4-5"
+        assert flat == "openai/gpt-5-nano"
 
 
 def test_a_task_with_no_grader_parameter_reports_it_rather_than_pretending() -> None:
-    assert grader_task_args("evalfloor/control_loose", GRADERS["anthropic"]) == {}
+    assert grader_task_args("evalfloor/control_loose", GRADERS["openai"]) == {}
 
 
 # --------------------------------------------------------------------------

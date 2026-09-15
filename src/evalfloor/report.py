@@ -501,6 +501,28 @@ def render_graded_section(floors: Sequence[TaskFloor], payload: dict[str, Any]) 
             )
         lines.append("")
 
+    total_unmapped = sum(f.n_unmapped for f in graded_floors)
+    if total_unmapped:
+        seen: dict[str, int] = {}
+        for f in graded_floors:
+            for verdict, n in (f.unmapped_verdicts or {}).items():
+                seen[verdict] = seen.get(verdict, 0) + n
+        lines.append(
+            f"> **{total_unmapped} verdicts had no committed mapping.** This eval "
+            "answers in its own vocabulary, and Inspect's generic `value_to_float()` "
+            "returns **0.0** for any string it does not know -- which would silently "
+            "discard every credit the judge gave. Unmapped verdicts are recorded "
+            "verbatim and excluded from the denominator instead, and the mapping is "
+            "added to `verdict_maps.jsonl` quoting the eval source line it came from. "
+            "Instrument defect 007."
+        )
+        lines.append("")
+        lines.append("| verdict returned | count |")
+        lines.append("|---|---|")
+        for verdict, n in sorted(seen.items(), key=lambda kv: -kv[1]):
+            lines.append(f"| `{_esc(verdict)}` | {n} |")
+        lines.append("")
+
     total_ungradeable = sum(f.n_ungradeable for f in graded_floors)
     if total_ungradeable:
         lines.append(
@@ -516,7 +538,7 @@ def render_graded_section(floors: Sequence[TaskFloor], payload: dict[str, Any]) 
     lines.append("### Every member, with intervals")
     lines.append("")
     lines.append(
-        "| task | member | score | 95% CI | correct | scored | refused | ungradeable "
+        "| task | member | score | 95% CI | correct | scored | refused | unmapped "
         "| completion |"
     )
     lines.append("|" + "---|" * 9)
@@ -529,7 +551,7 @@ def render_graded_section(floors: Sequence[TaskFloor], payload: dict[str, Any]) 
             lines.append(
                 f"| `{f.task}` | {name} | {cell} | {_ci(score)} | "
                 f"{score.n_correct} | {score.n_scored} | {score.n_refusals} | "
-                f"{score.n_ungradeable} | `{_esc(score.example_completion[:40])}` |"
+                f"{score.n_unmapped} | `{_esc(score.example_completion[:40])}` |"
             )
     lines.append("")
 
@@ -933,6 +955,19 @@ def render_readme(
     lines.append(
         "| `echo` on multimodal tasks | where inputs are images, echoing the input "
         "back is not well defined; such tasks are marked in the coverage file. |"
+    )
+    lines.append(
+        "| One judge, and it can be wrong | the graded arm is scored by a single "
+        "cheap model. Its id and the snapshot served are recorded in every row, and "
+        "a second grader from a different family gives a measured disagreement rate "
+        "-- which bounds the judge noise rather than removing it. |"
+    )
+    lines.append(
+        "| Per-eval grade vocabularies | graded evals answer in their own words "
+        "(ACCEPTABLE / NEITHER / COMPLIANCE and so on), and Inspect's generic "
+        "converter silently returns 0.0 for any it does not know, which understates "
+        "a floor. Mappings live in `verdict_maps.jsonl`, each quoting the eval "
+        "source line; an unmapped verdict is excluded and reported, never zeroed. |"
     )
     lines.append("")
 
