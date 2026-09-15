@@ -154,6 +154,8 @@ def choose_grader(explicit: str | None = None, allow_mock: bool = True) -> Grade
     """Pick the judge: explicit argument, then env var, then whichever key exists."""
     spec = explicit or os.environ.get(GRADER_ENV_VAR, "").strip() or None
     if spec:
+        if spec == STUB_MODEL:
+            return GRADERS_STUB
         for grader in GRADERS.values():
             if grader.model == spec:
                 return grader
@@ -242,13 +244,77 @@ def grader_task_args(task_name: str, grader: Grader) -> dict[str, Any]:
     except Exception:
         return {}
 
+    # The stub is a Model object, not a spec string: it has to be handed to the
+    # task directly, because no provider would resolve its name.
+    value: Any = stub_grader_model() if grader.model == STUB_MODEL else grader.model
+
     args: dict[str, Any] = {}
     for name, param in sig.parameters.items():
         if name not in GRADER_PARAM_NAMES:
             continue
         default = param.default
-        args[name] = [grader.model] if isinstance(default, list) else grader.model
+        args[name] = [value] if isinstance(default, list) else value
     return args
+
+
+#: The grade a stub grader emits. "I" = incorrect, so the stub credits nothing
+#: and the resulting floor is a real zero rather than an unparseable NaN.
+STUB_GRADE = "I"
+
+#: Grader spec that selects the stub below instead of a provider.
+STUB_MODEL = "mockllm/graded-stub"
+
+GRADERS_STUB = Grader(
+    model=STUB_MODEL,
+    family="mock",
+    price_in_per_mtok=0.0,
+    price_out_per_mtok=0.0,
+    price_source="no provider is called; emits a fixed, parseable grade",
+    is_mock=True,
+)
+
+
+def stub_grader_model(grade: str = STUB_GRADE) -> Any:
+    """A mock model that emits a **parseable** grade.
+
+    The bare ``mockllm/model`` answers "Default output from mockllm/model", which
+    carries no ``GRADE:`` line, so every grading call comes back *ungradeable*
+    and the arm has no floor at all. That is the correct thing to report, and the
+    harness does report it -- but it exercises only half the path: the grader is
+    called and nothing is ever parsed back out of it.
+
+    This stub closes the loop with no provider and no key. It answers every
+    grading request with a well-formed grade, so the scorer parses it, the value
+    flows into the arm, intervals are computed over real counts, and the cache
+    stores real values.
+
+    It is still **not evidence about any eval.** It grades nothing; it only
+    proves the pipeline carries a grade from the judge through to the matrix.
+    Note the vocabulary problem it has to work around. Inspect's default grade
+    pattern looks for ``GRADE: C|P|I``, but graded evals routinely define their
+    own: ``coconot`` parses ``ACCEPTABLE|UNACCEPTABLE|NEITHER``, its contrast
+    subset ``NONCOMPLIANCE|COMPLIANCE|NEITHER``. There is no single token that
+    satisfies all of them, so the stub emits the "did not meet the criterion"
+    verdict in each vocabulary it knows, one per line. That is honest for a test
+    double whose whole job is to answer "no" in whatever language it is asked --
+    and it is also the reason a real judge has to be prompted per eval rather
+    than dropped in generically.
+    """
+    from inspect_ai.model import ModelOutput, get_model
+
+    body = "\n".join(
+        [
+            "The answer does not meet the criterion.",
+            f"GRADE: {grade}",
+            "UNACCEPTABLE",
+            "NONCOMPLIANCE",
+        ]
+    )
+
+    def always_grade(*args: Any, **kwargs: Any) -> Any:
+        return ModelOutput.from_content(model=STUB_MODEL, content=body)
+
+    return get_model("mockllm/model", custom_outputs=always_grade, memoize=False)
 
 
 @contextlib.contextmanager

@@ -285,3 +285,80 @@ def test_a_task_where_nothing_scores_is_not_flagged() -> None:
     assert all(s.mean == 0.0 for s in floor.members.values() if s.applicable)
     assert floor.flagged is False, "a task where nothing scores must not be flagged"
     assert floor.flagged_by == []
+
+
+# --------------------------------------------------------------------------
+# 8. Generated prose carries generated numbers
+# --------------------------------------------------------------------------
+
+
+def _floor_with_echo(task: str, echo_correct: int, n: int, template: str = "bare"):
+    from evalfloor.aggregate import MemberScore, TaskFloor, wilson_interval
+
+    low, high = wilson_interval(echo_correct, n)
+    return TaskFloor(
+        task=task,
+        scorer="inspect_ai/includes",
+        n_samples=n,
+        sampled=False,
+        answer_template=template,
+        members={
+            "echo": MemberScore(
+                member="echo",
+                mean=echo_correct / n,
+                n_correct=echo_correct,
+                n_scored=n,
+                applicable=True,
+                ci_low=low,
+                ci_high=high,
+            )
+        },
+    )
+
+
+def test_echo_headline_counts_are_computed_not_typed() -> None:
+    from evalfloor.report import echo_headline
+
+    floors = [
+        _floor_with_echo("inspect_evals/paws", 970, 8000),
+        _floor_with_echo("inspect_evals/gsm8k", 28, 1319),
+        _floor_with_echo("inspect_evals/boolq", 0, 3270),
+    ]
+    line = echo_headline(floors)
+    assert line is not None
+    assert "2 of 3" in line, "only the tasks scoring above zero are counted"
+    assert "970 of 8,000" in line, "the worst task is named with its own counts"
+    assert "paws" in line
+
+
+def test_echo_headline_is_absent_when_there_is_nothing_to_report() -> None:
+    from evalfloor.report import echo_headline
+
+    assert echo_headline([]) is None
+
+
+def test_rendering_finding_states_the_collapse_and_the_tightness() -> None:
+    from evalfloor.aggregate import MemberScore
+    from evalfloor.report import rendering_finding
+
+    floor = _floor_with_echo("inspect_evals/sec_qa_v2", 0, 100, template="choice")
+    floor.majority = 0.31
+    floor.majority_raw = 0.0
+    floor.flagged_raw = True
+    floor.flagged = False
+    floor.members["all_labels"] = MemberScore(
+        member="all_labels", mean=0.0, n_correct=0, n_scored=100, applicable=True
+    )
+    text = rendering_finding([floor])
+    assert text is not None
+    assert "collapses to zero" in text
+    assert "0.000" in text
+    assert "raw arm" in text
+
+
+def test_rendering_finding_says_so_when_no_task_declares_a_template() -> None:
+    from evalfloor.report import rendering_finding
+
+    text = rendering_finding([_floor_with_echo("inspect_evals/paws", 970, 8000)])
+    assert text is not None
+    assert "identical by construction" in text

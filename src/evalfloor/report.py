@@ -232,17 +232,12 @@ def render_matrix(
         f"{templated_tasks} of {scored_tasks} tasks here declare an answer template. "
         f"The two arms disagree on {disagreements}."
     )
-    if disagreements:
+    finding = rendering_finding(floors_after)
+    if finding:
         lines.append("")
-        lines.append(
-            "**Read the disagreements the right way round.** Where the raw arm flags "
-            "and the rendered arm does not, that is not the raw arm being stricter. "
-            "It is the raw arm reproducing instrument defect 003: a reference "
-            "baseline written as a bare label cannot parse on a multiple-choice task, "
-            "so its `majority` collapses towards zero and almost anything clears it. "
-            "The rendered arm gives that task a real chance line to be measured "
-            "against. See `INSTRUMENT_LESSONS.md`."
-        )
+        lines.append(finding)
+        lines.append("")
+        lines.append("Both defects are written up in `INSTRUMENT_LESSONS.md`.")
     lines.append("")
 
     members = list(CONTENT_FREE_NAMES) + list(REFERENCE_NAMES)
@@ -296,6 +291,96 @@ def render_matrix(
     lines.append(render_battery_table())
     lines.append("")
     return "\n".join(lines)
+
+
+def echo_headline(floors: Sequence[TaskFloor]) -> str | None:
+    """The ``echo`` finding as one sentence, computed from the sweep.
+
+    Echoing the question back carries no information about the answer, so any
+    score it gets is the scorer crediting the input for containing the target.
+    Every number in the sentence comes from the payload; none is typed.
+    """
+    scored = [
+        f for f in floors if f.error is None and f.members and not f.nothing_scored
+    ]
+    with_echo = [
+        f for f in scored if f.members.get("echo") and f.members["echo"].applicable
+    ]
+    if not with_echo:
+        return None
+
+    above_zero = [f for f in with_echo if f.members["echo"].mean > 0.0]
+    worst = max(with_echo, key=lambda f: f.members["echo"].n_correct)
+    worst_echo = worst.members["echo"]
+
+    sentence = (
+        f"Echoing the question back scores above zero on **{len(above_zero)} of "
+        f"{len(with_echo)}** tasks swept."
+    )
+    if worst_echo.n_correct > 0:
+        short = worst.task.split("/")[-1]
+        sentence += (
+            f" On `{short}`, **{worst_echo.n_correct:,} of {worst_echo.n_scored:,}** "
+            "samples already contain a label somewhere in their own text, so the "
+            "input scores against itself."
+        )
+    return sentence
+
+
+def rendering_finding(floors: Sequence[TaskFloor]) -> str | None:
+    """The instrument finding behind the rendering rule, stated plainly.
+
+    Generated rather than written, so it cannot drift from the table above it.
+    """
+    scored = [
+        f for f in floors if f.error is None and f.members and not f.nothing_scored
+    ]
+    if not scored:
+        return None
+    templated = [f for f in scored if f.answer_template != "bare"]
+
+    collapsed = [f for f in templated if f.majority_raw == 0.0 and f.majority > 0.0]
+    raw_only = [f for f in scored if f.flagged_raw and not f.flagged]
+    all_labels_zero = [
+        f
+        for f in templated
+        if f.members.get("all_labels") is not None
+        and f.members["all_labels"].applicable
+        and f.members["all_labels"].mean == 0.0
+    ]
+
+    parts: list[str] = ["**What this table is showing.**"]
+    if collapsed:
+        parts.append(
+            f"On {len(collapsed)} of the {len(templated)} task(s) here that declare an "
+            "answer template, the raw arm's `majority` baseline is **0.0%** while the "
+            "rendered arm's is not. That is instrument defect 003 preserved as a "
+            "number: a bare label such as `C` is not an answer a multiple-choice "
+            "scorer can read, so the chance line collapses to zero and then anything "
+            "that scores at all clears it."
+        )
+    if raw_only:
+        parts.append(
+            f"That is why {len(raw_only)} task(s) are flagged on the raw arm and not "
+            "on the rendered one. The raw arm is not the stricter reading of the two; "
+            "it is the broken one, kept visible on purpose."
+        )
+    if all_labels_zero:
+        parts.append(
+            "In the other direction, rendered `all_labels` scores **0.000** on "
+            f"{len(all_labels_zero)} of {len(templated)} templated task(s): written "
+            "properly as `ANSWER: A, B, C, D`, the multiple-choice parser rejects a "
+            "multi-option answer to a single-answer question. So `choice()` is "
+            "genuinely tight against naming every label, and because most reachable "
+            "tasks are scored by `choice()`, that is a large part of why the headline "
+            "number is small rather than large."
+        )
+    if len(parts) == 1:
+        parts.append(
+            "No task here declares an answer template, so the raw and rendered arms "
+            "are identical by construction and the rendering rule changed nothing."
+        )
+    return " ".join(parts)
 
 
 def _first_error(floor: TaskFloor) -> str:
@@ -694,6 +779,7 @@ def render_readme(
             f"On the raw arm -- members written plainly, ignoring each task's answer "
             f"template -- it is {flagged_raw} of {denom}."
         )
+        echo_line = echo_headline(floors)
     else:
         headline = (
             f"`{README_PLACEHOLDER}` -- **no sweep has run yet.** This line is a "
@@ -701,6 +787,7 @@ def render_readme(
             "number is claimed here until it does."
         )
         secondary = ""
+        echo_line = None
 
     lines: list[str] = []
     lines.append("# eval-floor")
@@ -712,6 +799,9 @@ def render_readme(
     lines.append("## The number, and its denominator")
     lines.append("")
     lines.append(headline)
+    if echo_line:
+        lines.append("")
+        lines.append(echo_line)
     if secondary:
         lines.append("")
         lines.append(secondary)

@@ -47,7 +47,9 @@ Every member is defined semantically and then written down in the task's own ans
 
 1 of 5 tasks here declare an answer template. The two arms disagree on 1.
 
-**Read the disagreements the right way round.** Where the raw arm flags and the rendered arm does not, that is not the raw arm being stricter. It is the raw arm reproducing instrument defect 003: a reference baseline written as a bare label cannot parse on a multiple-choice task, so its `majority` collapses towards zero and almost anything clears it. The rendered arm gives that task a real chance line to be measured against. See `INSTRUMENT_LESSONS.md`.
+**What this table is showing.** On 1 of the 1 task(s) here that declare an answer template, the raw arm's `majority` baseline is **0.0%** while the rendered arm's is not. That is instrument defect 003 preserved as a number: a bare label such as `C` is not an answer a multiple-choice scorer can read, so the chance line collapses to zero and then anything that scores at all clears it. That is why 1 task(s) are flagged on the raw arm and not on the rendered one. The raw arm is not the stricter reading of the two; it is the broken one, kept visible on purpose. In the other direction, rendered `all_labels` scores **0.000** on 1 of 1 templated task(s): written properly as `ANSWER: A, B, C, D`, the multiple-choice parser rejects a multi-option answer to a single-answer question. So `choice()` is genuinely tight against naming every label, and because most reachable tasks are scored by `choice()`, that is a large part of why the headline number is small rather than large.
+
+Both defects are written up in `INSTRUMENT_LESSONS.md`.
 
 ## Every battery member, every task -- raw arm
 
