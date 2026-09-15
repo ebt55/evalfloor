@@ -14,6 +14,7 @@ every Inspect Evals eval is already required to support in its end-to-end test.
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Sequence
@@ -89,6 +90,13 @@ class ArmResult:
     n_scored: int = 0
     n_errors: int = 0
     n_correct: int = 0
+    #: Graded arm only: times the grader or the provider declined rather than
+    #: graded. Recorded, counted and published -- never retried away.
+    n_refusals: int = 0
+    #: Times the scorer returned a non-finite value -- the grader answered, but
+    #: emitted nothing that parses as a grade. Neither a score nor an error, and
+    #: excluded from the denominator rather than coerced to zero.
+    n_ungradeable: int = 0
     score_sum: float = 0.0
     applicable: bool = True
     not_applicable_reason: str | None = None
@@ -97,10 +105,17 @@ class ArmResult:
 
     @property
     def mean(self) -> float:
-        """Mean score over the samples the scorer actually returned a score for."""
+        """Mean score over the samples the scorer actually returned a score for.
+
+        Never returns a non-finite value: a NaN here would compare False against
+        every threshold in the flag rule and silently disappear into a report.
+        """
+        import math
+
         if self.n_scored == 0:
             return 0.0
-        return self.score_sum / self.n_scored
+        value = self.score_sum / self.n_scored
+        return value if math.isfinite(value) else 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -114,6 +129,8 @@ class ArmResult:
             "n_scored": self.n_scored,
             "n_errors": self.n_errors,
             "n_correct": self.n_correct,
+            "n_refusals": self.n_refusals,
+            "n_ungradeable": self.n_ungradeable,
             "mean": self.mean,
             "applicable": self.applicable,
             "not_applicable_reason": self.not_applicable_reason,
@@ -139,6 +156,16 @@ class TaskRun:
     arms: list[ArmResult] = field(default_factory=list)
     error: str | None = None
     elapsed_s: float = 0.0
+    #: Graded arm only. Empty string on the deterministic arm, where no model is
+    #: called at all and there is nothing to attribute a result to.
+    grader_model: str = ""
+    grader_snapshot: str = ""
+    #: Which task parameters the judge was injected through. Empty when the task
+    #: exposes none, which means it graded with whatever it hard-codes -- a fact
+    #: that has to be visible, not assumed away.
+    grader_injected_via: str = ""
+    capped_at: int | None = None
+    n_refusals: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -152,6 +179,11 @@ class TaskRun:
             "majority_share": self.majority_share,
             "error": self.error,
             "elapsed_s": round(self.elapsed_s, 3),
+            "grader_model": self.grader_model,
+            "grader_snapshot": self.grader_snapshot,
+            "grader_injected_via": self.grader_injected_via,
+            "capped_at": self.capped_at,
+            "n_refusals": self.n_refusals,
             "arms": [a.to_dict() for a in self.arms],
         }
 
@@ -322,6 +354,10 @@ async def run_arm(
             result.n_errors += 1
             if result.first_error is None:
                 result.first_error = f"{type(exc).__name__}: {exc}"[:300]
+            continue
+        if not math.isfinite(value):
+            # The scorer ran but returned nothing gradeable. Not a zero.
+            result.n_ungradeable += 1
             continue
         result.n_scored += 1
         result.score_sum += value

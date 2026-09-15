@@ -287,10 +287,205 @@ def render_matrix(
             )
     lines.append("")
 
+    if payload.get("arm") == "graded" or any(f.graded for f in floors_after):
+        lines.append(render_graded_section(floors_after, payload))
+        lines.append("")
+
     lines.append("## The battery")
     lines.append("")
     lines.append(render_battery_table())
     lines.append("")
+    return "\n".join(lines)
+
+
+def _first_error(floor: TaskFloor) -> str:
+    return floor.first_error or floor.error or "not recorded"
+
+
+def _ci(score: Any) -> str:
+    if score is None or score.ci_low is None or score.ci_high is None:
+        return "-"
+    return f"[{100 * score.ci_low:.1f}, {100 * score.ci_high:.1f}]"
+
+
+def render_graded_section(floors: Sequence[TaskFloor], payload: dict[str, Any]) -> str:
+    """The model-graded arm: intervals, the grader, refusals, disagreement.
+
+    Deliberately kept separate from the deterministic tables. The two arms are
+    never added together into one rate: one is exact over whole datasets and
+    free, the other is a capped sample graded by a model that can be wrong and
+    costs money per call.
+    """
+    grader = payload.get("grader") or {}
+    graded_floors = [f for f in floors if f.graded and not f.error]
+
+    lines: list[str] = ["## The model-graded arm", ""]
+    lines.append(
+        "Rates here are over a **capped sample**, graded by a model, not over a whole "
+        "dataset by a pure function. They are reported as Wilson 95% intervals, and "
+        "the flag rule on this arm uses the interval's **lower bound** rather than the "
+        "point estimate: a task is flagged only when its floor clears chance even at "
+        "the pessimistic end. These numbers are never added to the deterministic "
+        "arm's to make a combined rate."
+    )
+    lines.append("")
+
+    lines.append("| grader | value |")
+    lines.append("|---|---|")
+    lines.append(f"| model | `{_esc(grader.get('model', 'unknown'))}` |")
+    lines.append(f"| family | {_esc(grader.get('family', 'unknown'))} |")
+    lines.append(f"| cap | {payload.get('cap', '?')} samples per task per member |")
+    lines.append(f"| price source | {_esc(grader.get('price_source', 'unknown'))} |")
+    keys = payload.get("keys_present") or {}
+    if keys:
+        lines.append(
+            "| API keys present | "
+            + _esc(", ".join(f"{k}={'yes' if v else 'no'}" for k, v in keys.items()))
+            + " |"
+        )
+    cost = payload.get("cost_estimate") or {}
+    if cost:
+        usd = cost.get("usd")
+        lines.append(
+            "| estimated cost of this run | "
+            + (f"${usd:,.4f}" if isinstance(usd, (int, float)) else "unpriced grader")
+            + " |"
+        )
+        lines.append(f"| grading calls made | {cost.get('n_calls', 0):,} |")
+    lines.append(
+        f"| cache hits / misses | {payload.get('cache_hits', 0)} / "
+        f"{payload.get('cache_misses', 0)} |"
+    )
+    lines.append("")
+
+    if grader.get("is_mock"):
+        lines.append(
+            "> **This run used `mockllm/model`, which is not a grader.** No provider "
+            "was called and no API key was present. The numbers below exercise the "
+            "plumbing and say **nothing whatever** about any eval. They are published "
+            "only so the harness can be checked before money is spent running it."
+        )
+        lines.append("")
+
+    lines.append("### Per task")
+    lines.append("")
+    lines.append(
+        "| task | scorer | n | grader | majority | best content-free | 95% CI | "
+        "refusals | flagged |"
+    )
+    lines.append("|" + "---|" * 9)
+    dead: list[TaskFloor] = []
+    for f in graded_floors:
+        if f.nothing_scored:
+            dead.append(f)
+            lines.append(
+                f"| `{f.task}` | `{_esc(f.scorer)}` | {f.n_samples} | "
+                f"`{_esc(f.grader_model)}` | NO RESULT | NO RESULT | - | "
+                f"{f.n_refusals} | not measured |"  # noqa: E501
+            )
+            continue
+        best = f.members.get(f.best_member) if f.best_member else None
+        lines.append(
+            f"| `{f.task}` | `{_esc(f.scorer)}` | {f.n_samples} | "
+            f"`{_esc(f.grader_model)}` | {_pct(f.majority)} | "
+            f"{f.best_member or '-'} {_pct(f.best_mean)} | {_ci(best)} | "
+            f"{f.n_refusals} | {', '.join(f.flagged_by) if f.flagged else 'no'} |"
+        )
+    if not graded_floors:
+        lines.append("| _(no graded task produced a floor)_ | | | | | | | | |")
+    lines.append("")
+
+    if dead:
+        lines.append(
+            f"> **{len(dead)} task(s) produced NO RESULT**: not one grading call "
+            "succeeded, so there is no floor to report. This is written as "
+            "`NO RESULT`, never as 0.0%. A task where nothing scored has not been "
+            "measured, and printing a zero there would be the same class of mistake "
+            "this project exists to find."
+        )
+        lines.append("")
+        lines.append(
+            "| task | errors | ungradeable | first error | grader injected via |"
+        )
+        lines.append("|---|---|---|---|---|")
+        for f in dead:
+            via = f.grader_injected_via or "NOT REDIRECTABLE (task hard-codes its grader)"
+            lines.append(
+                f"| `{f.task}` | {f.n_errors} | {f.n_ungradeable} | "
+                f"{_esc(_first_error(f))[:100]} | {_esc(via)} |"
+            )
+        lines.append("")
+
+    total_ungradeable = sum(f.n_ungradeable for f in graded_floors)
+    if total_ungradeable:
+        lines.append(
+            f"> **{total_ungradeable} grading calls came back ungradeable**: the "
+            "grader answered, but emitted nothing that parses as a grade. That is "
+            "neither a score nor an error nor a refusal, and it is **not** counted "
+            "as a zero -- coercing it to zero would report a floor that was never "
+            "measured. Ungradeable calls are excluded from the denominator and "
+            "counted here."
+        )
+        lines.append("")
+
+    lines.append("### Every member, with intervals")
+    lines.append("")
+    lines.append(
+        "| task | member | score | 95% CI | correct | scored | refused | ungradeable "
+        "| completion |"
+    )
+    lines.append("|" + "---|" * 9)
+    for f in graded_floors:
+        for name in list(CONTENT_FREE_NAMES) + list(REFERENCE_NAMES):
+            score = f.members.get(name)
+            if score is None or not score.applicable:
+                continue
+            cell = "NO RESULT" if score.n_scored == 0 else _pct(score.mean)
+            lines.append(
+                f"| `{f.task}` | {name} | {cell} | {_ci(score)} | "
+                f"{score.n_correct} | {score.n_scored} | {score.n_refusals} | "
+                f"{score.n_ungradeable} | `{_esc(score.example_completion[:40])}` |"
+            )
+    lines.append("")
+
+    lines.append("### Refusals")
+    lines.append("")
+    n_refusals = payload.get("n_refusals", 0)
+    lines.append(
+        f"**{n_refusals}** grading calls were declined by the grader or the provider. "
+        "Each is recorded verbatim in `refusals.jsonl` with a SHA-256 of the prompt "
+        "that produced it, and counted in the tables above. None was reworded, and "
+        "none was retried more than once with the identical request. A refusal is not "
+        "scored as a zero: it is taken out of the denominator and reported separately, "
+        "because counting a declined grading as a failed answer would quietly credit "
+        "the battery member it was grading."
+    )
+    lines.append("")
+
+    dis = payload.get("disagreement")
+    if dis:
+        lines.append("### Judge-disagreement control")
+        lines.append("")
+        if dis.get("skipped"):
+            lines.append(f"Skipped: {_esc(dis['skipped'])}.")
+        else:
+            rate = dis.get("rate", 0.0)
+            low = dis.get("ci_low") or 0.0
+            high = dis.get("ci_high") or 0.0
+            lines.append(
+                f"On `{_esc(dis.get('task'))}`, graders `{_esc(dis.get('grader_a'))}` "
+                f"and `{_esc(dis.get('grader_b'))}` were run over the same items. They "
+                f"disagreed on **{dis.get('n_disagree', 0)} of "
+                f"{dis.get('n_compared', 0)}** = **{100 * rate:.1f}%** "
+                f"[{100 * low:.1f}%, {100 * high:.1f}%]."
+            )
+            lines.append("")
+            lines.append(
+                "That rate is how much of this arm is judge noise rather than signal. "
+                "It is compared per item, not per mean: two judges can agree on every "
+                "mean while disagreeing on every item."
+            )
+        lines.append("")
     return "\n".join(lines)
 
 

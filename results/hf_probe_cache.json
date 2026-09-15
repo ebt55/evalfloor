@@ -17,11 +17,29 @@
     "error": null,
     "gated": false
   },
+  "CompassioninMachineLearning/moru-benchmark": {
+    "bytes": 630536,
+    "dataset": "CompassioninMachineLearning/moru-benchmark",
+    "error": null,
+    "gated": false
+  },
+  "CompassioninMachineLearning/moru-benchmark-dimensions": {
+    "bytes": 31793,
+    "dataset": "CompassioninMachineLearning/moru-benchmark-dimensions",
+    "error": null,
+    "gated": false
+  },
   "CompassioninMachineLearning/tac": {
     "bytes": 93202,
     "dataset": "CompassioninMachineLearning/tac",
     "error": null,
     "gated": true
+  },
+  "CraneAILabs/UCCB": {
+    "bytes": 681454,
+    "dataset": "CraneAILabs/UCCB",
+    "error": null,
+    "gated": false
   },
   "EleutherAI/drop": {
     "bytes": 11639991,
@@ -59,6 +77,18 @@
     "error": null,
     "gated": false
   },
+  "SOSBench/SOSBench": {
+    "bytes": 221050,
+    "dataset": "SOSBench/SOSBench",
+    "error": null,
+    "gated": false
+  },
+  "ScaleAI/fortress_public": {
+    "bytes": 673678,
+    "dataset": "ScaleAI/fortress_public",
+    "error": null,
+    "gated": false
+  },
   "TAUR-Lab/MuSR": {
     "bytes": 7149329,
     "dataset": "TAUR-Lab/MuSR",
@@ -83,6 +113,12 @@
     "error": null,
     "gated": false
   },
+  "allenai/coconot": {
+    "bytes": 4099191,
+    "dataset": "allenai/coconot",
+    "error": null,
+    "gated": false
+  },
   "allenai/winogrande": {
     "bytes": 4618916,
     "dataset": "allenai/winogrande",
@@ -94,6 +130,12 @@
     "dataset": "ambean/lingOly",
     "error": null,
     "gated": true
+  },
+  "cais/MASK": {
+    "bytes": 851455,
+    "dataset": "cais/MASK",
+    "error": null,
+    "gated": false
   },
   "cais/hle": {
     "bytes": 274282300,
@@ -128,6 +170,12 @@
   "ehovy/race": {
     "bytes": 83045341,
     "dataset": "ehovy/race",
+    "error": null,
+    "gated": false
+  },
+  "facebook/cyberseceval3-visual-prompt-injection": {
+    "bytes": 1260209049,
+    "dataset": "facebook/cyberseceval3-visual-prompt-injection",
     "error": null,
     "gated": false
   },
@@ -215,6 +263,12 @@
     "error": null,
     "gated": false
   },
+  "openai/frontierscience": {
+    "bytes": 517732,
+    "dataset": "openai/frontierscience",
+    "error": null,
+    "gated": false
+  },
   "openai/gsm8k": {
     "bytes": 5900352,
     "dataset": "openai/gsm8k",
@@ -256,6 +310,12 @@
     "dataset": "truthfulqa/truthful_qa",
     "error": null,
     "gated": false
+  },
+  "walledai/XSTest": {
+    "bytes": 22082,
+    "dataset": "walledai/XSTest",
+    "error": null,
+    "gated": true
   },
   "zefang-liu/secqa": {
     "bytes": 147858,

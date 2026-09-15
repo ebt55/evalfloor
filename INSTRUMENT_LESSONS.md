@@ -110,3 +110,39 @@ One row per defect. Newest last.
   tight against "name every label" -- a real negative result that the earlier
   special-cased version could not have produced.
 * **Pinned by** `tests/test_paws_regression.py::test_paws_declares_no_answer_template_so_the_arms_coincide`.
+
+## 006 -- an ungradeable grader response was about to be reported as a zero
+
+* **Caught** 2026-09-15, by the first graded smoke run, on `inspect_evals/coconot`.
+* **Symptom** two of them, in sequence. First the task reported every member at
+  `0.0%`; then, once the grader was actually reaching the scorer, every member
+  reported `nan%`.
+* **Cause** two separate defects wearing the same mask.
+  1. `coconot` takes its judge as a **task parameter** (`grader`, defaulting to
+     a hard-coded provider model), so setting `INSPECT_EVAL_MODEL` did not
+     redirect it. Every call failed on a missing provider dependency, and the
+     arm reported `0.0%` -- a floor that had never been measured.
+  2. With the judge injected properly, `model_graded_qa` returned a **non-finite
+     score** for each call: the grader answered, but emitted nothing matching the
+     grade pattern, so the scorer's value was `NaN`. `NaN` propagates through a
+     mean silently and compares `False` against every threshold, so the flag rule
+     would have quietly declined to flag anything, for ever, with no error.
+* **What it invalidated** nothing published -- this was the first graded run and
+  it was a mock. But the shape is the exact failure this project exists to find:
+  a number that looks like a measured floor and is not one.
+* **Fix**, three parts.
+  - `graded.grader_task_args` introspects each task's signature and injects the
+    judge through whatever grader parameter it declares; when a task declares
+    none, `grader_injected_via` is empty and the report prints
+    "NOT REDIRECTABLE" rather than pretending the cheap judge was used.
+  - A non-finite score is now its own outcome, `ungradeable`, counted separately
+    and **excluded from the denominator**. It is not an error, not a refusal, and
+    explicitly not a zero.
+  - `ArmResult.mean` can no longer return a non-finite value, and a task where
+    nothing scored is marked `nothing_scored`, printed as `NO RESULT`, and kept
+    out of the flag-rate denominator entirely.
+* **Lesson** the deterministic arm made "scored zero" and "never scored" look
+  alike because with a pure scorer they almost never diverge. With a model in the
+  loop they diverge constantly, and every one of the three outcomes -- graded,
+  refused, ungradeable -- needs its own column.
+* **Pinned by** `tests/test_graded.py`.

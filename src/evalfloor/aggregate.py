@@ -58,6 +58,8 @@ class MemberScore:
     applicable: bool
     arm: str = "rendered"
     example_completion: str = ""
+    n_refusals: int = 0
+    n_ungradeable: int = 0
     not_applicable_reason: str | None = None
     ci_low: float | None = None
     ci_high: float | None = None
@@ -97,6 +99,21 @@ class TaskFloor:
     flagged: bool = False
     flagged_by: list[str] = field(default_factory=list)
     flagged_raw: bool = False
+    #: Graded arm only. When true the rates are over a capped sample rather than
+    #: the dataset, so the report prints Wilson intervals and the flag rule uses
+    #: the interval's lower bound, not the point estimate.
+    graded: bool = False
+    grader_model: str = ""
+    grader_snapshot: str = ""
+    grader_injected_via: str = ""
+    capped_at: int | None = None
+    n_refusals: int = 0
+    n_errors: int = 0
+    n_ungradeable: int = 0
+    first_error: str | None = None
+    #: True when not one grading call succeeded. A floor of 0.0% because nothing
+    #: was scored is not a floor of 0.0%, and must never print as one.
+    nothing_scored: bool = False
     ruling: str | None = None
     ruling_reason: str | None = None
     error: str | None = None
@@ -134,6 +151,8 @@ def _mean_over_seeds(arms: Sequence[ArmResult]) -> MemberScore | None:
         member=usable[0].member,
         arm=usable[0].arm,
         example_completion=usable[0].example_completion,
+        n_refusals=sum(a.n_refusals for a in usable),
+        n_ungradeable=sum(a.n_ungradeable for a in usable),
         mean=mean,
         n_correct=total_correct,
         n_scored=total_scored,
@@ -142,6 +161,28 @@ def _mean_over_seeds(arms: Sequence[ArmResult]) -> MemberScore | None:
         ci_high=high,
         n_seeds=len(usable),
     )
+
+
+def _clears(score: MemberScore, floor: "TaskFloor") -> bool:
+    """Does this content-free member reach the task's chance line?
+
+    On the deterministic arm every sample is scored, so the point estimate *is*
+    the rate and the comparison is exact.
+
+    On the graded arm the rate is over at most ``capped_at`` sampled items, so a
+    point estimate would flag tasks on sampling noise. The preregistered rule
+    there is stricter: the **Wilson lower bound** of the member must reach the
+    majority baseline. A task is only flagged when the floor is above chance even
+    on the pessimistic end of the interval.
+    """
+    if score.mean <= 0.0:
+        # The zero guard. A member that scores nothing has not reached any floor,
+        # and 0 >= 0 is a defect signature rather than a finding.
+        return False
+    if floor.graded:
+        lower = score.ci_low if score.ci_low is not None else score.mean
+        return lower >= floor.majority
+    return score.mean >= floor.majority
 
 
 def aggregate_run(run: TaskRun, full_dataset_size: int | None = None) -> list[TaskFloor]:
@@ -172,7 +213,20 @@ def aggregate_run(run: TaskRun, full_dataset_size: int | None = None) -> list[Ta
             sampled=bool(full_dataset_size and run.n_samples < full_dataset_size),
             majority_label=run.majority_label,
             answer_template=run.answer_template,
+            graded=bool(run.grader_model),
+            grader_model=run.grader_model,
+            grader_snapshot=run.grader_snapshot,
+            grader_injected_via=run.grader_injected_via,
+            capped_at=run.capped_at,
+            n_refusals=run.n_refusals,
         )
+        scorer_arms = [a for a in run.arms if a.scorer == scorer]
+        floor.n_errors = sum(a.n_errors for a in scorer_arms)
+        floor.n_ungradeable = sum(a.n_ungradeable for a in scorer_arms)
+        floor.first_error = next(
+            (a.first_error for a in scorer_arms if a.first_error), None
+        )
+        floor.nothing_scored = sum(a.n_scored for a in scorer_arms) == 0
         for (arm_name, member), arms in buckets.items():
             score = _mean_over_seeds(arms)
             if score is None:
@@ -201,9 +255,7 @@ def aggregate_run(run: TaskRun, full_dataset_size: int | None = None) -> list[Ta
             floor.best_mean = best.mean
             floor.gap_to_majority = best.mean - floor.majority
             floor.flagged_by = sorted(
-                s.member
-                for s in content_free
-                if s.mean >= floor.majority and s.mean > 0.0
+                s.member for s in content_free if _clears(s, floor)
             )
             floor.flagged = bool(floor.flagged_by)
 
@@ -218,9 +270,15 @@ def aggregate_run(run: TaskRun, full_dataset_size: int | None = None) -> list[Ta
             best_raw = max(content_free_raw, key=lambda s: s.mean)
             floor.best_member_raw = best_raw.member
             floor.best_mean_raw = best_raw.mean
-            floor.flagged_raw = any(
-                s.mean >= floor.majority_raw and s.mean > 0.0 for s in content_free_raw
+            raw_floor = TaskFloor(
+                task=floor.task,
+                scorer=floor.scorer,
+                n_samples=floor.n_samples,
+                sampled=floor.sampled,
+                majority=floor.majority_raw,
+                graded=floor.graded,
             )
+            floor.flagged_raw = any(_clears(s, raw_floor) for s in content_free_raw)
         floors.append(floor)
     return floors
 
@@ -243,7 +301,11 @@ def flag_rate(floors: Sequence[TaskFloor], arm: str = "rendered") -> tuple[int, 
     preregistered headline; "raw" is reported beside it so the effect of the
     rendering rule on the number is itself a published figure.
     """
-    scored = {f.task for f in floors if f.error is None and f.members}
+    # A task where not one call scored has not been measured. It belongs in the
+    # coverage file as a failure, never in the denominator of a rate.
+    scored = {
+        f.task for f in floors if f.error is None and f.members and not f.nothing_scored
+    }
     if arm == "raw":
         flagged = {f.task for f in floors if f.error is None and f.flagged_raw}
     else:

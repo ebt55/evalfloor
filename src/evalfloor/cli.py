@@ -46,6 +46,14 @@ SMOKE_TASKS: tuple[str, ...] = (
     "inspect_evals/drop",  # f1
 )
 
+#: Samples per task per member on the graded arm. Preregistered.
+GRADED_CAP = 100
+
+#: Default budgets. A smoke run is exploratory and cheap; the real arm is
+#: deliberately capped low enough that an accident cannot empty a grant.
+GRADED_BUDGET_SMOKE = 5.0
+GRADED_BUDGET_REAL = 30.0
+
 DEFAULT_RESULTS = pathlib.Path("results")
 DEFAULT_RULINGS = pathlib.Path("rulings.jsonl")
 DEFAULT_INVENTORY_JSON = DEFAULT_RESULTS / "task_inventory.json"
@@ -271,6 +279,29 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         )
         for path in written:
             print(f"wrote {path}")
+
+    # The graded arm, when asked for, runs after the deterministic one and writes
+    # its own payload beside it. Two arms, two files, never mixed into one rate.
+    if getattr(args, "graded", False):
+        print("\n" + "=" * 62)
+        print("graded arm")
+        print("=" * 62)
+        graded_out = out / "graded"
+        graded_args = argparse.Namespace(
+            tasks=None,
+            limit_tasks=args.graded_limit_tasks,
+            out=str(graded_out),
+            rulings=args.rulings,
+            no_report=args.no_report,
+            grader=args.grader,
+            second_grader=args.second_grader,
+            disagreement=args.disagreement,
+            cap=args.cap,
+            budget_usd=args.budget_usd,
+            price_in=args.price_in,
+            price_out=args.price_out,
+        )
+        cmd_graded(graded_args)
     return EXIT_OK
 
 
@@ -302,6 +333,283 @@ def _regenerate(
         # A smoke run never rewrites the README. Its numbers are not results.
         readme_path=pathlib.Path("README.md") if readme else None,
     )
+
+
+# --------------------------------------------------------------------------
+# graded arm
+# --------------------------------------------------------------------------
+
+
+def graded_task_names(out: pathlib.Path) -> list[str]:
+    """The tasks the generated inventory classified as model-graded."""
+    rows = _load_inventory(out) or []
+    return sorted(
+        row["name"] for row in rows if row.get("exclusion_reason") == "model_graded"
+    )
+
+
+def _apply_price_overrides(grader: Any, args: argparse.Namespace) -> Any:
+    from dataclasses import replace
+
+    price_in = getattr(args, "price_in", None)
+    price_out = getattr(args, "price_out", None)
+    if price_in is None and price_out is None:
+        return grader
+    if price_in is None or price_out is None:
+        raise SystemExit("--price-in and --price-out must be given together")
+    return replace(
+        grader,
+        price_in_per_mtok=price_in,
+        price_out_per_mtok=price_out,
+        price_source=f"stated on the command line: ${price_in} in / ${price_out} out per MTok",
+    )
+
+
+def _print_keys() -> dict[str, bool]:
+    from .graded import detect_keys
+
+    keys = detect_keys()
+    print(
+        "api keys present: "
+        + ", ".join(f"{name}={'yes' if present else 'no'}" for name, present in keys.items())
+    )
+    return keys
+
+
+def run_graded(
+    tasks: Sequence[str], out: pathlib.Path, args: argparse.Namespace
+) -> tuple[list[TaskRun], list[Any], dict[str, Any]]:
+    """Drive the graded arm over the given tasks. Returns (runs, floors, metadata)."""
+    from .battery import BATTERY
+    from .drive import resolve_task, task_samples
+    from .graded import (
+        BudgetExceeded,
+        CostEstimate,
+        GradedCache,
+        RefusalLog,
+        arms_for_template,
+        choose_grader,
+        choose_second_grader,
+        disagreement_from_cache,
+        grade_task_async,
+    )
+
+    keys = _print_keys()
+    grader = _apply_price_overrides(choose_grader(args.grader), args)
+    print(f"grader: {grader.model} (family {grader.family})")
+    if grader.is_mock:
+        print(
+            "  WARNING: no API key was found, so the grader is mockllm/model.\n"
+            "  This exercises the plumbing ONLY. A mock grader is not evidence about\n"
+            "  any eval. Every row it writes carries its model id so the distinction\n"
+            "  survives into the results files."
+        )
+
+    cache = GradedCache.load(out / "graded_cache.jsonl")
+    refusals = RefusalLog(out / "refusals.jsonl")
+
+    runs: list[TaskRun] = []
+    floors: list[Any] = []
+    estimates: list[CostEstimate] = []
+
+    for name in tasks:
+        print(f"\n  {name}")
+        try:
+            run, estimate = asyncio.run(
+                grade_task_async(
+                    name, grader, cap=args.cap, cache=cache,
+                    refusals=refusals, budget_usd=args.budget_usd,
+                )
+            )
+        except BudgetExceeded as exc:
+            print(f"\n{exc}", file=sys.stderr)
+            raise SystemExit(EXIT_UNRUNNABLE) from None
+        runs.append(run)
+        estimates.append(estimate)
+        if run.error:
+            print(f"    FAILED: {run.error[:110]}")
+            floors.extend(aggregate_run(run))
+            continue
+        task_floors = aggregate_run(run)
+        floors.extend(task_floors)
+        for floor in task_floors:
+            state = (
+                "FLAGGED by " + ", ".join(floor.flagged_by) if floor.flagged else "clean"
+            )
+            print(
+                f"    n={run.n_samples} refusals={run.n_refusals} "
+                f"majority={100 * floor.majority:.1f}% "
+                f"best={floor.best_member or '-'} {100 * floor.best_mean:.1f}% -> {state}"
+            )
+
+    meta: dict[str, Any] = {
+        "graded": True,
+        "keys_present": keys,
+        "grader": grader.to_dict(),
+        "cap": args.cap,
+        "budget_usd": args.budget_usd,
+        "cache_hits": cache.hits,
+        "cache_misses": cache.misses,
+        "n_refusals": sum(r.n_refusals for r in runs),
+        "refusals_path": str(out / "refusals.jsonl"),
+        "cost_estimate": {
+            "n_calls": sum(e.n_calls for e in estimates),
+            "input_tokens": sum(e.input_tokens for e in estimates),
+            "output_tokens": sum(e.output_tokens for e in estimates),
+            "usd": (
+                round(sum(e.usd for e in estimates if e.usd is not None), 4)
+                if estimates and all(e.priced for e in estimates)
+                else None
+            ),
+        },
+    }
+
+    # Judge-disagreement control: one task, a grader from a different family.
+    if args.second_grader or args.disagreement:
+        second_spec = args.second_grader
+        second = choose_second_grader(grader, second_spec)
+        if second is not None:
+            second = _apply_price_overrides(second, args)
+        if second is None or not tasks:
+            print("\n  judge-disagreement control skipped: no second grader available")
+            meta["disagreement"] = {
+                "skipped": "no grader from a different family is available"
+            }
+        else:
+            target = tasks[0]
+            print(f"\n  judge-disagreement control: {target} with {second.model}")
+            run_b, _ = asyncio.run(
+                grade_task_async(
+                    target, second, cap=args.cap, cache=cache,
+                    refusals=refusals, budget_usd=args.budget_usd,
+                )
+            )
+            samples = task_samples(resolve_task(target), limit=args.cap)
+            dis = disagreement_from_cache(
+                target, run_b.scorers, samples, list(BATTERY),
+                arms_for_template(run_b.answer_template), grader, second, cache,
+            )
+            print(
+                f"    disagreement {dis.n_disagree}/{dis.n_compared} "
+                f"= {100 * dis.rate:.1f}% "
+                f"[{100 * (dis.ci_low or 0):.1f}%, {100 * (dis.ci_high or 0):.1f}%]"
+            )
+            meta["disagreement"] = dis.to_dict()
+
+    return runs, floors, meta
+
+
+def cmd_graded(args: argparse.Namespace) -> int:
+    out = pathlib.Path(args.out)
+    prereg_commit = check_ordering_gate(out)
+    smoke = is_smoke_output(out)
+
+    if args.tasks:
+        tasks: list[str] = []
+        for item in args.tasks:
+            tasks.extend(p.strip() for p in item.split(",") if p.strip())
+    else:
+        tasks = graded_task_names(DEFAULT_RESULTS)
+        if args.limit_tasks:
+            tasks = tasks[: args.limit_tasks]
+
+    if smoke:
+        print(f"SMOKE graded run into {out}/ -- exempt from the ordering gate, not a result")
+    else:
+        print(f"preregistration committed at {prereg_commit[:12]}; proceeding")
+
+    runs, floors, meta = run_graded(tasks, out, args)
+
+    payload: dict[str, Any] = {
+        "schema": 2,
+        "arm": "graded",
+        "pins": installed_pins(),
+        "battery_fingerprint": battery_fingerprint(),
+        "limit": args.cap,
+        "tasks": list(tasks),
+        "digest": sweep_digest(runs),
+        "smoke": smoke,
+        "preregistration_path": PREREGISTRATION_FILENAME,
+        "preregistration_commit": prereg_commit,
+        "generated_at": _dt.datetime.now(_dt.timezone.utc).isoformat(timespec="seconds"),
+        "runs": [r.to_dict() for r in runs],
+        "floors": [f.to_dict() for f in floors],
+        **meta,
+    }
+    sweep_path = write_sweep(payload, out / "sweep.json")
+    print(f"\nwrote {sweep_path}")
+    flagged, denom = flag_rate(floors)
+    print(f"graded flag rate before rulings: {flagged} of {denom}")
+    print(f"refusals recorded: {meta['n_refusals']} -> {meta['refusals_path']}")
+
+    if not args.no_report:
+        written = _regenerate(out, pathlib.Path(args.rulings), payload, readme=not smoke)
+        for path in written:
+            print(f"wrote {path}")
+    return EXIT_OK
+
+
+def cmd_estimate(args: argparse.Namespace) -> int:
+    """Print the graded arm's cost estimate without calling anything."""
+    from .battery import BATTERY, detect_template
+    from .drive import label_set, resolve_task, task_samples
+    from .graded import choose_grader, estimate_cost, grader_active
+
+    _print_keys()
+    grader = _apply_price_overrides(choose_grader(args.grader), args)
+    print(f"grader for the estimate: {grader.model}")
+    print(f"price source: {grader.price_source}")
+    print()
+
+    tasks = (
+        [t.strip() for item in args.tasks for t in item.split(",") if t.strip()]
+        if args.tasks
+        else graded_task_names(DEFAULT_RESULTS)
+    )
+    total_calls = total_in = total_out = 0
+    total_usd = 0.0
+    priced = True
+    failed: list[tuple[str, str]] = []
+    loaded = 0
+
+    with grader_active(grader):
+        for name in tasks:
+            try:
+                samples = task_samples(resolve_task(name), limit=args.cap)
+            except Exception as exc:
+                failed.append((name, f"{type(exc).__name__}: {exc}"[:90]))
+                print(f"  {name:<46} could not load")
+                continue
+            loaded += 1
+            labels = label_set(samples)
+            template = detect_template(samples[0]).name if samples else "bare"
+            est = estimate_cost(samples, list(BATTERY), labels, grader, template, args.cap)
+            total_calls += est.n_calls
+            total_in += est.input_tokens
+            total_out += est.output_tokens
+            if est.priced and est.usd is not None:
+                total_usd += est.usd
+            else:
+                priced = False
+            print(
+                f"  {name:<46} n={len(samples):<4} calls={est.n_calls:>6,}  "
+                + (f"${est.usd:,.2f}" if est.usd is not None else "$?")
+            )
+
+    print()
+    print(f"tasks loaded    : {loaded} of {len(tasks)}")
+    print(f"grading calls   : {total_calls:,}")
+    print(f"input tokens    : {total_in:,}")
+    print(f"output tokens   : {total_out:,}")
+    print(
+        "estimated total : "
+        + (f"${total_usd:,.2f}" if priced else "UNKNOWN (grader has no verified price)")
+    )
+    if failed:
+        print(f"could not load  : {len(failed)}")
+        for name, why in failed:
+            print(f"    {name}: {why}")
+    return EXIT_OK
 
 
 def cmd_report(args: argparse.Namespace) -> int:
@@ -406,6 +714,46 @@ def cmd_check(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 
+def add_grader_args(parser: argparse.ArgumentParser, default_budget: float) -> None:
+    """Grader selection, the sample cap and the cost guard, shared by subcommands."""
+    parser.add_argument(
+        "--grader",
+        default=None,
+        help="grader model spec; overrides EVALFLOOR_GRADER and key detection",
+    )
+    parser.add_argument(
+        "--second-grader",
+        default=None,
+        help="grader from a different family, for the judge-disagreement control",
+    )
+    parser.add_argument(
+        "--disagreement",
+        action="store_true",
+        help="run the judge-disagreement control on the first task",
+    )
+    parser.add_argument(
+        "--cap",
+        type=int,
+        default=GRADED_CAP,
+        help=f"samples per task per member (default {GRADED_CAP})",
+    )
+    parser.add_argument(
+        "--budget-usd",
+        type=float,
+        default=default_budget,
+        help=f"refuse to run when the estimate exceeds this (default {default_budget})",
+    )
+    parser.add_argument(
+        "--price-in",
+        type=float,
+        default=None,
+        help="USD per MTok input, for a grader this project has no verified price for",
+    )
+    parser.add_argument(
+        "--price-out", type=float, default=None, help="USD per MTok output"
+    )
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="evalfloor",
@@ -437,6 +785,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_sweep.add_argument("--rulings", default=str(DEFAULT_RULINGS))
     p_sweep.add_argument("--limit", type=int, default=None, help="cap samples per task")
     p_sweep.add_argument("--no-report", action="store_true")
+    p_sweep.add_argument(
+        "--graded",
+        action="store_true",
+        help="also run the model-graded arm into <out>/graded/ after the deterministic one",
+    )
+    p_sweep.add_argument(
+        "--graded-limit-tasks", type=int, default=None,
+        help="with --graded, use only the first N model-graded tasks",
+    )
+    add_grader_args(p_sweep, GRADED_BUDGET_REAL)
     p_sweep.set_defaults(func=cmd_sweep)
 
     p_report = sub.add_parser(
@@ -454,6 +812,27 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_readme.add_argument("--out", default=str(DEFAULT_RESULTS))
     p_readme.set_defaults(func=cmd_readme)
+
+    p_graded = sub.add_parser(
+        "graded", help="drive the model-graded tasks with one cheap judge"
+    )
+    p_graded.add_argument("--tasks", nargs="*", help="task names; default is all model-graded")
+    p_graded.add_argument(
+        "--limit-tasks", type=int, default=None, help="use only the first N tasks"
+    )
+    p_graded.add_argument("--out", default=str(DEFAULT_RESULTS / "graded"))
+    p_graded.add_argument("--rulings", default=str(DEFAULT_RULINGS))
+    p_graded.add_argument("--no-report", action="store_true")
+    add_grader_args(p_graded, GRADED_BUDGET_REAL)
+    p_graded.set_defaults(func=cmd_graded)
+
+    p_est = sub.add_parser(
+        "estimate", help="print the graded arm's cost estimate without calling anything"
+    )
+    p_est.add_argument("--tasks", nargs="*")
+    p_est.add_argument("--out", default=str(DEFAULT_RESULTS))
+    add_grader_args(p_est, GRADED_BUDGET_REAL)
+    p_est.set_defaults(func=cmd_estimate)
 
     p_check = sub.add_parser(
         "check", help="exit non-zero when a content-free member reaches majority"
