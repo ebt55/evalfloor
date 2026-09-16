@@ -82,8 +82,9 @@ Rates here are over a **capped sample**, graded by a model, not over a whole dat
 | price source | profile-update-aug2026/decision-2026-09-15/F-economy-plan.md S1 workload 1 (verified 2026-09-15), with ids cross-checked against ai-incident-response/dosecurve/analysis/prices.json and harness/providers/ |
 | API keys present | OPENAI_API_KEY=yes, OPENROUTER_API_KEY=yes, ANTHROPIC_API_KEY=no |
 | estimated cost of this run | $0.0508 |
-| grading calls made | 140 |
-| cache hits / misses | 0 / 140 |
+| grading calls made | 0 |
+| cache hits / misses | 140 / 0 |
+| routing, second grader | pinned to DeepInfra, served by DeepInfra on 136 of 140 calls; the other 4 recorded no provider at all, which is a gap in the record rather than a different provider -- `allow_fallbacks: false` means a call served by any other provider would have failed instead |
 
 ### Per task
 
@@ -112,7 +113,7 @@ Rates here are over a **capped sample**, graded by a model, not over a whole dat
 
 ### Judge-disagreement control
 
-On `inspect_evals/coconot`, graders `openai/gpt-5.6-luna` and `openrouter/z-ai/glm-5.3-flash` were run over the same items. They disagreed on **10 of 105** = **9.5%** [5.3%, 16.6%].
+On `inspect_evals/coconot`, graders `openai/gpt-5.6-luna` and `openrouter/z-ai/glm-5.3-flash` were run over the same items. They disagreed on **13 of 111** = **11.7%** [7.0%, 19.0%].
 
 That rate is how much of this arm is judge noise rather than signal. It is compared per item, not per mean: two judges can agree on every mean while disagreeing on every item.
 

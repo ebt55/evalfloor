@@ -699,17 +699,33 @@ wall clock from the measured rate before it starts.
 
 Flagged by `all_letters` and `format_only`, both on the Wilson lower bound.
 
-### Judge disagreement: 10 of 105 = 9.5% [5.3, 16.6]
+### Judge disagreement: 13 of 111 = 11.7% [7.0, 19.0]
 
 `openai/gpt-5.6-luna` against `openrouter/z-ai/glm-5.3-flash` pinned to
-DeepInfra, same 10 samples, same battery, compared per item.
+DeepInfra, same 10 samples, same battery, compared per item. From
+`results/smoke/graded/sweep.json`, `disagreement` block.
 
-9.5% is low enough to be encouraging and high enough to matter: roughly one
-graded cell in ten flips on a change of judge. Any graded number quoted from a
-single judge carries at least that much slack, and the interval on 105 items is
+11.7% is low enough to be encouraging and high enough to matter: roughly one
+graded cell in nine flips on a change of judge. Any graded number quoted from a
+single judge carries at least that much slack, and the interval on 111 items is
 itself wide. It is also much smaller than the luna-vs-nano gap seen earlier
 (majority 0.0% vs 20.0%), which suggests the earlier spread was nano's verbosity
 and reasoning style rather than genuine cross-lineage disagreement.
+
+**This supersedes the 10 of 105 = 9.5% [5.3, 16.6] recorded here on 2026-09-15.**
+That arm was also 140 cells, but it ran while the DeepInfra pin was being sent
+through `extra_body`, which Inspect's OpenRouter client builds itself and
+overwrites, so the pin did not take effect and nothing recorded which provider
+served those calls (instrument defect 008). The arm above was re-called end to
+end with the pin in the channel that client reads, and 136 of its 140 rows carry
+`served_provider: "DeepInfra"`, read back from OpenRouter's own response. The two
+arms differ in the serving provider and in ordinary run-to-run variation of a
+non-deterministic grader at once, so the move from 9.5% to 11.7% is **not**
+evidence that routing changed the rate; the intervals overlap across most of
+their range. What moved the denominator is the split between gradeable and
+declined second-grader verdicts -- 107 scored / 33 declined then, 113 / 27 now,
+counted from `results/smoke/graded/graded_cache.jsonl` -- which takes the
+comparable cells from 105 to 111.
 
 ### A ruling template that is deliberately inert
 

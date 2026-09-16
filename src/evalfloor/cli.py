@@ -438,6 +438,8 @@ def run_graded(
             state = (
                 "FLAGGED by " + ", ".join(floor.flagged_by) if floor.flagged else "clean"
             )
+            if run.routing_note:
+                print(f"    routing: {run.routing_note}")
             print(
                 f"    n={run.n_samples} refusals={run.n_refusals} "
                 f"majority={100 * floor.majority:.1f}% "
@@ -498,7 +500,13 @@ def run_graded(
                 f"= {100 * dis.rate:.1f}% "
                 f"[{100 * (dis.ci_low or 0):.1f}%, {100 * (dis.ci_high or 0):.1f}%]"
             )
-            meta["disagreement"] = dis.to_dict()
+            d = dis.to_dict()
+            d["routing_note"] = run_b.routing_note
+            d["served_provider"] = run_b.served_provider
+            d["served_counts"] = run_b.served_counts
+            if run_b.routing_note:
+                print(f"    routing: {run_b.routing_note}")
+            meta["disagreement"] = d
 
     return runs, floors, meta
 

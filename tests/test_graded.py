@@ -319,9 +319,78 @@ def test_provider_pinning_is_requested() -> None:
     from evalfloor.graded import judge_model_args
 
     pinned = judge_model_args(GRADERS["openrouter"], "inspect_evals/coconot")
-    order = pinned["extra_body"]["provider"]["order"]
-    assert order == ["DeepInfra"], "unpinned pays the canonical rate"
-    assert pinned["extra_body"]["provider"]["allow_fallbacks"] is False
+    # Inspect's OpenRouter provider takes `provider` as a MODEL ARG and builds
+    # extra_body itself; passing extra_body directly is the wrong channel.
+    assert pinned["provider"]["order"] == ["DeepInfra"], "unpinned pays canonical"
+    assert pinned["provider"]["allow_fallbacks"] is False
+    assert "extra_body" not in pinned
+
+
+def test_the_serving_provider_is_recorded_not_inferred() -> None:
+    """The pin is a request; which provider served it is a fact to be read."""
+    from evalfloor.graded import PROVIDER_UNREPORTED, routing_note
+
+    ok = routing_note(GRADERS["openrouter"], "DeepInfra", 140, 140)
+    assert "served by DeepInfra on 140 of 140" in ok
+    assert "gap in the record" not in ok
+
+    # A row that recorded no provider is a hole in the record. It must not read
+    # as though some other provider served those calls.
+    partial = routing_note(GRADERS["openrouter"], "DeepInfra", 136, 140)
+    assert "served by DeepInfra on 136 of 140" in partial
+    assert "the other 4 recorded no provider at all" in partial
+
+    unknown = routing_note(GRADERS["openrouter"], PROVIDER_UNREPORTED, 138, 140)
+    assert "UNREPORTED" in unknown
+    assert "served by" not in unknown, "must not claim a provider it was not told"
+
+    wrong = routing_note(GRADERS["openrouter"], "Parasail", 140, 140)
+    assert "did NOT take effect" in wrong
+
+    # A direct-API judge has no routing layer to ask about, so there is no
+    # measurement to report as missing.
+    assert routing_note(GRADERS["openai"], PROVIDER_UNREPORTED, 140, 140) == ""
+
+
+def test_the_routing_probe_retries_before_reporting_nothing(monkeypatch) -> None:
+    """The pinned pool 429s intermittently; one attempt would lose the answer."""
+    import evalfloor.graded as g
+
+    monkeypatch.setenv("OPENROUTER_API_KEY", "not-a-real-key")
+    monkeypatch.setattr(g.time, "sleep", lambda _s: None)
+
+    calls = {"n": 0}
+
+    class _Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+        def read(self):
+            return b'{"provider": "DeepInfra"}'
+
+    def flaky(_request, timeout=0):
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise OSError("HTTP Error 429: Too Many Requests")
+        return _Response()
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", flaky)
+    assert g.probe_openrouter_routing(GRADERS["openrouter"], attempts=3) == "DeepInfra"
+    assert calls["n"] == 3
+
+    calls["n"] = 0
+    monkeypatch.setattr(
+        urllib.request, "urlopen", lambda *a, **k: (_ for _ in ()).throw(OSError("429"))
+    )
+    assert (
+        g.probe_openrouter_routing(GRADERS["openrouter"], attempts=3)
+        == g.PROVIDER_UNREPORTED
+    ), "an exhausted probe reports nothing rather than assuming the pin held"
 
 
 def test_haiku_is_refused_as_a_judge(monkeypatch) -> None:

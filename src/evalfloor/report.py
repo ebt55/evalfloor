@@ -441,6 +441,14 @@ def render_graded_section(floors: Sequence[TaskFloor], payload: dict[str, Any]) 
         f"| cache hits / misses | {payload.get('cache_hits', 0)} / "
         f"{payload.get('cache_misses', 0)} |"
     )
+    routing = [
+        (f.grader_model, f.routing_note) for f in graded_floors if f.routing_note
+    ]
+    for model_id, note in dict(routing).items():
+        lines.append(f'| routing, {_esc(model_id)} | {_esc(note)} |')
+    dis_routing = (payload.get('disagreement') or {}).get('routing_note')
+    if dis_routing:
+        lines.append(f'| routing, second grader | {_esc(dis_routing)} |')
     lines.append("")
 
     if grader.get("is_mock"):

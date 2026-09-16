@@ -101,6 +101,11 @@ class ArmResult:
     #: coerced to 0.0; recorded verbatim and excluded. Instrument defect 007.
     n_unmapped: int = 0
     unmapped_verdicts: dict[str, int] = field(default_factory=dict)
+    #: How many of this cell's calls recorded each serving provider, read from
+    #: the provider's own response and carried on the cached row. "unreported"
+    #: where it could not be read. Counted from the rows rather than derived
+    #: from the score count, so the routing note quotes what was recorded.
+    served_counts: dict[str, int] = field(default_factory=dict)
     score_sum: float = 0.0
     applicable: bool = True
     not_applicable_reason: str | None = None
@@ -137,6 +142,7 @@ class ArmResult:
             "n_ungradeable": self.n_ungradeable,
             "n_unmapped": self.n_unmapped,
             "unmapped_verdicts": self.unmapped_verdicts,
+            "served_counts": self.served_counts,
             "mean": self.mean,
             "applicable": self.applicable,
             "not_applicable_reason": self.not_applicable_reason,
@@ -176,6 +182,13 @@ class TaskRun:
     measured_usage: dict[str, Any] = field(default_factory=dict)
     n_unmapped: int = 0
     unmapped_verdicts: dict[str, int] = field(default_factory=dict)
+    #: Which provider actually served the calls, read from the provider's own
+    #: response. "unreported" when it cannot be determined -- never inferred.
+    served_provider: str = "unreported"
+    #: How many calls each provider is recorded as having served, summed over
+    #: the arms. The routing note's numerator and denominator come from here.
+    served_counts: dict[str, int] = field(default_factory=dict)
+    routing_note: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -195,6 +208,9 @@ class TaskRun:
             "capped_at": self.capped_at,
             "n_refusals": self.n_refusals,
             "measured_usage": self.measured_usage,
+            "served_provider": self.served_provider,
+            "served_counts": self.served_counts,
+            "routing_note": self.routing_note,
             "n_unmapped": self.n_unmapped,
             "unmapped_verdicts": self.unmapped_verdicts,
             "arms": [a.to_dict() for a in self.arms],

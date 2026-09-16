@@ -107,6 +107,8 @@ class TaskFloor:
     grader_model: str = ""
     grader_snapshot: str = ""
     grader_injected_via: str = ""
+    served_provider: str = "unreported"
+    routing_note: str = ""
     capped_at: int | None = None
     n_refusals: int = 0
     n_errors: int = 0
@@ -221,6 +223,8 @@ def aggregate_run(run: TaskRun, full_dataset_size: int | None = None) -> list[Ta
             grader_model=run.grader_model,
             grader_snapshot=run.grader_snapshot,
             grader_injected_via=run.grader_injected_via,
+            served_provider=run.served_provider,
+            routing_note=run.routing_note,
             capped_at=run.capped_at,
             n_refusals=run.n_refusals,
         )

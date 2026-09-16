@@ -146,3 +146,67 @@ One row per defect. Newest last.
   loop they diverge constantly, and every one of the three outcomes -- graded,
   refused, ungradeable -- needs its own column.
 * **Pinned by** `tests/test_graded.py`.
+
+## 008 -- the provider pin was requested on a channel that was overwritten
+
+* **Caught** 2026-09-16, by the task of capturing which provider actually served
+  the second grader. Nothing failed; the defect was found by asking for a fact
+  the instrument had never been asked to record.
+* **Symptom** none visible. Every run printed, and every file repeated, that
+  `openrouter/z-ai/glm-5.3-flash` was "pinned to DeepInfra". No results file
+  recorded which provider served any call, so there was nothing that could
+  contradict the claim -- and the request itself was being discarded in silence,
+  with no error and no warning from either side.
+* **Cause** `graded.judge_model_args` sent the pin as
+  `extra_body={"provider": {"order": ["DeepInfra"], "allow_fallbacks": false}}`.
+  Inspect's OpenRouter provider collects `provider` as a **model argument** and
+  builds `extra_body` itself (`openrouter.py`, `collect_model_arg`), so the
+  `extra_body` handed in was overwritten before the request went out. The pin
+  was the right value on the wrong channel, which is indistinguishable from no
+  pin at all except by looking at the response.
+* **What it invalidated** the judge-disagreement figure published in commit
+  255eb3a -- 10 of 105 = 9.5 per cent [5.3, 16.6] -- and the "pinned rate" cost
+  line quoted beside it. Neither is wrong as a measurement; both were measured
+  under routing that was never recorded, so neither is the pinned-DeepInfra
+  measurement the surrounding text claimed it was. The price per second-grader
+  call may have been the canonical rate, about double the pinned one.
+  Re-measured with the pin in the channel that client reads:
+  **13 of 111 = 11.7 per cent [7.0, 19.0]**. The two arms differ in serving
+  provider and in ordinary run-to-run variation of a non-deterministic grader at
+  once, so the move is not evidence that routing changed the rate.
+* **Fix**, four parts.
+  - The pin is passed as a model arg, which is what that client reads.
+  - `graded.probe_openrouter_routing` asks OpenRouter with the identical pin and
+    reads the top-level `provider` field off the response. Inspect does not
+    surface that field on `ModelOutput`, so it cannot be read off the grading
+    calls the harness already makes.
+  - `served_provider` is recorded on every cache row, every refusal row, the
+    `TaskRun`, the `TaskFloor`, the CLI printout, the disagreement block and the
+    report table. It reads `unreported` where it could not be read, and is
+    **never** back-filled from the pin. On this smoke 136 of 140 second-grader
+    rows carry `DeepInfra` and 4 carry `unreported`, because the probe that
+    accompanied those 4 lost the race described below. Four holes in the record
+    are published as four holes, not as four DeepInfra calls.
+  - The routing note counts the rows that recorded a provider, not the rows that
+    produced a usable score. A grader that answered with an ungradeable verdict
+    was still served by somebody; a call that errored was not served at all.
+* **Second defect, found by the fix** the probe asked once. DeepInfra's shared
+  pool returns a transient `429 engine_overloaded` often enough to matter:
+  measured 2026-09-16, two of twelve single-shot probes returned a provider name
+  and the other ten returned 429, while the four grading calls made alongside
+  the failures went through normally. One attempt would
+  therefore have written `unreported` for a pin that was in fact honoured --
+  failing safe, but recording its own absence more often than the answer. The
+  probe now retries with backoff before reporting nothing. It still refuses to
+  read the provider name out of an error body: a provider that refused a call
+  did not serve it.
+* **Lesson** a request is not a fact. A configuration line that says "pinned"
+  proves nothing about what happened until the response says who served it, and
+  the gap between the two can stay invisible indefinitely, because everything
+  downstream is quoting the request back rather than the answer. The same
+  applies to the fact once it is being read: a measurement taken once, over a
+  channel that fails intermittently, records absence as readily as it records
+  the answer.
+* **Pinned by** `tests/test_graded.py::test_provider_pinning_is_requested`,
+  `::test_the_serving_provider_is_recorded_not_inferred` and
+  `::test_the_routing_probe_retries_before_reporting_nothing`.

@@ -304,13 +304,121 @@ def judge_model_args(
         if task_name:
             args["prompt_cache_key"] = f"evalfloor::{task_name}"
     if grader.pin_provider:
-        args["extra_body"] = {
-            "provider": {
-                "order": [grader.pin_provider],
-                "allow_fallbacks": False,
-            }
+        # Inspect's OpenRouter provider takes `provider` as a MODEL ARG and
+        # builds extra_body itself (openrouter.py:117 collect_model_arg, :423).
+        # Passing extra_body directly is the wrong channel and is overwritten.
+        args["provider"] = {
+            "order": [grader.pin_provider],
+            "allow_fallbacks": False,
         }
     return args
+
+
+#: Recorded when the serving provider cannot be determined. Never guessed.
+PROVIDER_UNREPORTED = "unreported"
+
+
+def probe_openrouter_routing(
+    grader: Grader, timeout: int = 60, attempts: int = 3, backoff_s: float = 20.0
+) -> str:
+    """Which provider actually served this model, read from OpenRouter.
+
+    OpenRouter's chat-completions response carries a top-level ``provider``
+    field, but Inspect does not surface it on ``ModelOutput`` -- metadata comes
+    back empty -- so it cannot be read off the calls the harness already makes.
+    This asks with the identical pin, and returns the name it is told.
+
+    Asks more than once because the pinned provider's shared pool returns a
+    transient ``429 engine_overloaded`` often enough to matter: measured
+    2026-09-16, two of twelve single-shot probes returned a provider name and
+    the other ten returned 429, while the grading calls made alongside the
+    failures went through normally. One attempt would therefore record
+    "unreported" for a pin that was in fact honoured.
+
+    Returns ``PROVIDER_UNREPORTED`` if the field is absent or every attempt
+    fails. Never infers a provider name from configuration, and never reads one
+    out of an error body: a provider that refused a call did not serve it.
+    """
+    import urllib.request
+
+    key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    if not key or grader.family != "openrouter":
+        return PROVIDER_UNREPORTED
+
+    body: dict[str, Any] = {
+        "model": grader.model.split("/", 1)[-1],
+        "messages": [{"role": "user", "content": "Reply with the single word OK."}],
+        "max_tokens": 5,
+    }
+    if grader.pin_provider:
+        body["provider"] = {
+            "order": [grader.pin_provider],
+            "allow_fallbacks": False,
+        }
+    request = urllib.request.Request(
+        "https://openrouter.ai/api/v1/chat/completions",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {key}",
+            "Content-Type": "application/json",
+            "HTTP-Referer": "https://github.com/ebt55/eval-floor",
+            "X-Title": "eval-floor",
+        },
+    )
+    for attempt in range(1, max(1, attempts) + 1):
+        try:
+            with urllib.request.urlopen(request, timeout=timeout) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except Exception:
+            if attempt >= attempts:
+                return PROVIDER_UNREPORTED
+            time.sleep(backoff_s * attempt)
+            continue
+        served = payload.get("provider")
+        return str(served) if served else PROVIDER_UNREPORTED
+    return PROVIDER_UNREPORTED
+
+
+def routing_note(grader: Grader, served: str, n_served: int, n_calls: int) -> str:
+    """The sentence the report prints, built from data rather than intent.
+
+    ``n_served`` is how many of the ``n_calls`` rows recorded ``served`` as the
+    provider that answered them, counted off the rows themselves. It is not the
+    number of calls that produced a usable score: a grader that answered with an
+    ungradeable verdict was still served by somebody.
+    """
+    if grader.family != "openrouter":
+        # No routing layer to ask: the model id names the server. Saying
+        # "served by unreported" here would read as a failed measurement
+        # where there was never a measurement to make.
+        return ""
+    if not grader.pin_provider:
+        if served == PROVIDER_UNREPORTED:
+            return "not pinned; serving provider unreported"
+        return f"not pinned; served by {served} on {n_served} of {n_calls} calls"
+    if served == PROVIDER_UNREPORTED:
+        return (
+            f"pinned to {grader.pin_provider}, serving provider UNREPORTED "
+            f"on {n_served} of {n_calls} calls"
+        )
+    if served == grader.pin_provider:
+        note = (
+            f"pinned to {grader.pin_provider}, served by {served} on "
+            f"{n_served} of {n_calls} calls"
+        )
+        if n_served < n_calls:
+            note += (
+                f"; the other {n_calls - n_served} recorded no provider at all, "
+                "which is a gap in the record rather than a different provider"
+            )
+        return note + (
+            " -- `allow_fallbacks: false` means a call served by any other "
+            "provider would have failed instead"
+        )
+    return (
+        f"pinned to {grader.pin_provider} but served by {served} -- "
+        f"the pin did NOT take effect; the canonical rate was probably paid"
+    )
 
 
 def _env_spec(*names: str) -> str | None:
@@ -1041,6 +1149,7 @@ class RefusalLog:
         verbatim: str,
         kind: str,
         retried: bool,
+        served_provider: str = "unreported",
     ) -> None:
         self.count += 1
         row = {
@@ -1051,6 +1160,7 @@ class RefusalLog:
             "arm": arm,
             "grader_model": grader.model,
             "grader_family": grader.family,
+            "served_provider": served_provider,
             "prompt_sha256": hashlib.sha256(prompt_text.encode("utf-8")).hexdigest(),
             "prompt_chars": len(prompt_text),
             "kind": kind,
@@ -1090,6 +1200,7 @@ async def run_graded_arm(
     cache: GradedCache,
     refusals: RefusalLog,
     verdict_maps: dict[str, dict[str, float]] | None = None,
+    served_provider: str = PROVIDER_UNREPORTED,
 ) -> ArmResult:
     """One (member, seed, arm) over capped samples, cached, refusals recorded."""
     from inspect_ai.scorer import value_to_float
@@ -1115,6 +1226,11 @@ async def run_graded_arm(
     to_float = value_to_float()
     started = time.monotonic()
 
+    def count_served(name: str) -> None:
+        """One tally per call, keyed by the provider the row says served it."""
+        provider = str(name or PROVIDER_UNREPORTED)
+        result.served_counts[provider] = result.served_counts.get(provider, 0) + 1
+
     for sample in samples:
         completion = member.completion(sample, labels, seed, arm=arm)
         if completion is None:
@@ -1129,6 +1245,10 @@ async def run_graded_arm(
         )
         cached = cache.get(key)
         if cached is not None:
+            # A cached row that predates routing capture has no field, and is
+            # counted as unreported rather than backfilled from the pin.
+            if not cached.get("error"):
+                count_served(cached.get("served_provider", PROVIDER_UNREPORTED))
             if cached.get("refusal"):
                 result.n_refusals += 1
                 continue
@@ -1172,20 +1292,26 @@ async def run_graded_arm(
         if score is None:
             kind = "refusal" if looks_like_refusal(error_text or "") else "error"
             if kind == "refusal":
+                count_served(served_provider)
                 result.n_refusals += 1
                 refusals.record(
                     task_name, scorer_name, sample.id, member.name, arm, grader,
                     prompt_text, error_text or "", "provider_exception", retried,
+                    served_provider,
                 )
                 cache.put(key, {"refusal": True, "verbatim": error_text,
-                                "grader_model": grader.model})
+                                "grader_model": grader.model,
+                                "served_provider": served_provider})
             else:
                 result.n_errors += 1
                 if result.first_error is None:
                     result.first_error = (error_text or "")[:300]
-                cache.put(key, {"error": error_text, "grader_model": grader.model})
+                cache.put(key, {"error": error_text, "grader_model": grader.model,
+                                "served_provider": served_provider})
             continue
 
+        # The call came back, whatever it came back with.
+        count_served(served_provider)
         explanation = getattr(score, "explanation", "") or ""
         snapshot = _snapshot_from_score(score, grader)
 
@@ -1201,6 +1327,7 @@ async def run_graded_arm(
                 {
                     "unmapped_verdict": raw_verdict,
                     "grader_model": grader.model,
+                    "served_provider": served_provider,
                     "grader_snapshot": snapshot,
                     "explanation": explanation[:2000],
                 },
@@ -1219,6 +1346,7 @@ async def run_graded_arm(
                 {
                     "ungradeable": True,
                     "grader_model": grader.model,
+                    "served_provider": served_provider,
                     "grader_snapshot": snapshot,
                     "explanation": explanation[:2000],
                 },
@@ -1232,9 +1360,11 @@ async def run_graded_arm(
             refusals.record(
                 task_name, scorer_name, sample.id, member.name, arm, grader,
                 prompt_text, explanation, "grader_declined_to_grade", retried,
+                served_provider,
             )
             cache.put(key, {"refusal": True, "verbatim": explanation,
-                            "grader_model": grader.model, "grader_snapshot": snapshot})
+                            "grader_model": grader.model, "grader_snapshot": snapshot,
+                            "served_provider": served_provider})
             continue
 
         result.n_scored += 1
@@ -1247,6 +1377,7 @@ async def run_graded_arm(
                 "value": value,
                 "raw_verdict": raw_verdict,
                 "grader_model": grader.model,
+                "served_provider": served_provider,
                 "grader_snapshot": snapshot,
                 "explanation": explanation[:2000],
             },
@@ -1435,6 +1566,7 @@ async def grade_task_async(
     cache = cache or GradedCache.load(pathlib.Path("results/graded_cache.jsonl"))
     refusals = refusals or RefusalLog(pathlib.Path("results/refusals.jsonl"))
     verdict_maps = load_verdict_maps()
+    served_provider = probe_openrouter_routing(grader)
 
     started = time.monotonic()
     run = TaskRun(task=task_name)
@@ -1514,7 +1646,7 @@ async def grade_task_async(
                                 await run_graded_arm(
                                     task_name, scorer, name, member, seed, arm,
                                     samples, labels, grader, cache, refusals,
-                                    verdict_maps,
+                                    verdict_maps, served_provider,
                                 )
                             )
 
@@ -1525,6 +1657,18 @@ async def grade_task_async(
         for verdict, n in a.unmapped_verdicts.items():
             unmapped[verdict] = unmapped.get(verdict, 0) + n
     run.unmapped_verdicts = unmapped
+    # The routing note counts the rows that recorded a provider, not the rows
+    # that produced a usable score. A grader that answered with an ungradeable
+    # verdict was still served, and a call that errored was not served at all.
+    served_counts: dict[str, int] = {}
+    for a in run.arms:
+        for provider, n in a.served_counts.items():
+            served_counts[provider] = served_counts.get(provider, 0) + n
+    run.served_counts = served_counts
+    n_calls = sum(served_counts.values())
+    n_served = served_counts.get(served_provider, 0)
+    run.served_provider = served_provider
+    run.routing_note = routing_note(grader, served_provider, n_served, n_calls)
     run.measured_usage = meter.to_dict(grader)
     run.grader_snapshot = meter.first_output[:0] or grader.model
     run.elapsed_s = time.monotonic() - started
