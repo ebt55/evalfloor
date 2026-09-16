@@ -24,7 +24,7 @@ import sys
 from typing import Any, Sequence
 
 from . import installed_pins
-from .aggregate import aggregate_run, flag_rate, sweep_digest
+from .aggregate import aggregate_run, collision_count, flag_rate, sweep_digest
 from .battery import BATTERY, battery_fingerprint
 from .drive import TaskRun, drive_task_async
 from .report import (
@@ -45,6 +45,35 @@ SMOKE_TASKS: tuple[str, ...] = (
     "inspect_evals/paws",  # includes
     "inspect_evals/drop",  # f1
 )
+
+#: The model-graded arm's first sweep, fixed by ``PREREGISTRATION.md`` section 8A.
+#:
+#: The generated inventory classifies **27** tasks as ``model_graded``. Eight of
+#: them are runnable; the other 19 are excluded and counted -- 15 fetch their
+#: dataset from a URL or a repository at run time, two are over the 1.00 GiB disk
+#: cap (``mmmu_open`` at 3.41 GiB), and one (``xstest``) is gated.
+#:
+#: Until 2026-09-17 ``sweep --graded`` passed no task list, so the graded arm
+#: defaulted to all 27: nine ``agie_*`` URL-fetching tasks, ``mmmu_open`` and
+#: ``xstest`` included. The preregistered denominator is 8, so the eight are
+#: named here, in the order the preregistration lists them, and passed
+#: explicitly. ``--tasks`` still overrides.
+GRADED_FIRST_SWEEP: tuple[str, ...] = (
+    "inspect_evals/frontierscience",
+    "inspect_evals/moru",
+    "inspect_evals/fortress_adversarial",
+    "inspect_evals/fortress_benign",
+    "inspect_evals/mask",
+    "inspect_evals/coconot",
+    "inspect_evals/uccb",
+    "inspect_evals/sosbench",
+)
+
+#: The judge-disagreement control's task. The prior published in the
+#: preregistration -- 13 of 111 comparable cells -- was measured on this task and
+#: on no other, so the control has to run on it or say that it did not. The arm
+#: used to run the control on ``tasks[0]``, whatever happened to sort first.
+DISAGREEMENT_TASK = "inspect_evals/coconot"
 
 #: Samples per task per member on the graded arm. Preregistered.
 GRADED_CAP = 100
@@ -272,6 +301,12 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     flagged, denom = flag_rate(floors)
     flagged_raw, _ = flag_rate(floors, arm="raw")
     print(f"flag rate before rulings: {flagged} of {denom} rendered, {flagged_raw} of {denom} raw")
+    n_collisions = collision_count(floors)
+    if n_collisions:
+        print(
+            f"  of which {n_collisions} rest on the format_only/majority template "
+            "collision (marked, not removed)"
+        )
 
     if not args.no_report:
         written = _regenerate(
@@ -290,6 +325,10 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         graded_args = argparse.Namespace(
             tier=getattr(args, "tier", "standard"),
             tasks=None,
+            # A first sweep of the deterministic arm means a first sweep of the
+            # graded one: the preregistered eight, not every task the inventory
+            # marks model_graded.
+            first_sweep=bool(getattr(args, "first_sweep", False)),
             limit_tasks=args.graded_limit_tasks,
             out=str(graded_out),
             rulings=args.rulings,
@@ -297,6 +336,7 @@ def cmd_sweep(args: argparse.Namespace) -> int:
             grader=args.grader,
             second_grader=args.second_grader,
             disagreement=args.disagreement,
+            disagreement_task=getattr(args, "disagreement_task", None),
             cap=args.cap,
             budget_usd=args.budget_usd,
             price_in=args.price_in,
@@ -349,6 +389,31 @@ def graded_task_names(out: pathlib.Path) -> list[str]:
     )
 
 
+def resolve_graded_task_list(args: argparse.Namespace) -> tuple[list[str], str]:
+    """``(tasks, where the list came from)`` for the graded arm.
+
+    Three sources, in precedence order: an explicit ``--tasks``, the
+    preregistered eight under ``--first-sweep``, and -- only when neither is
+    given -- every task the inventory marks ``model_graded``. That last one is
+    the 27, which is not the preregistered denominator and is announced as such.
+    """
+    if args.tasks:
+        tasks: list[str] = []
+        for item in args.tasks:
+            tasks.extend(p.strip() for p in item.split(",") if p.strip())
+        return tasks, "--tasks, stated on the command line"
+
+    if getattr(args, "first_sweep", False):
+        tasks = list(GRADED_FIRST_SWEEP)
+        source = "GRADED_FIRST_SWEEP, the preregistered eight"
+    else:
+        tasks = graded_task_names(DEFAULT_RESULTS)
+        source = "the inventory's model_graded class"
+    if getattr(args, "limit_tasks", None):
+        tasks = tasks[: args.limit_tasks]
+    return tasks, source
+
+
 def _apply_price_overrides(grader: Any, args: argparse.Namespace) -> Any:
     from dataclasses import replace
 
@@ -392,7 +457,9 @@ def run_graded(
         choose_grader,
         choose_second_grader,
         disagreement_from_cache,
+        enforce_run_budget,
         grade_task_async,
+        project_run,
     )
 
     keys = _print_keys()
@@ -408,6 +475,26 @@ def run_graded(
 
     cache = GradedCache.load(out / "graded_cache.jsonl")
     refusals = RefusalLog(out / "refusals.jsonl")
+
+    # The whole arm's estimate, summed BEFORE the first provider call. The
+    # per-task guard inside grade_task_async stays: it is the one that stops a
+    # single task running away mid-arm. This one stops eight tasks each under
+    # the budget from costing eight times it. Loading the datasets to get here
+    # costs time and disk, never money.
+    print("\n  projecting the whole arm before any provider call:")
+    projection = project_run(
+        tasks, grader, cap=args.cap, cache=cache,
+        tier=getattr(args, "tier", "standard"),
+    )
+    print(projection.describe())
+    for name, reason in projection.excluded:
+        print(f"    excluded: {name}: {reason}")
+    if args.budget_usd is not None:
+        try:
+            enforce_run_budget(projection, args.budget_usd, grader)
+        except BudgetExceeded as exc:
+            print(f"\n{exc}", file=sys.stderr)
+            raise SystemExit(EXIT_UNRUNNABLE) from None
 
     runs: list[TaskRun] = []
     floors: list[Any] = []
@@ -450,6 +537,9 @@ def run_graded(
         "graded": True,
         "service_tier": getattr(args, "tier", "standard"),
         "keys_present": keys,
+        # What the arm was projected to cost and which tasks could not be loaded,
+        # recorded whether or not they later failed for some other reason.
+        "run_projection": projection.to_dict(),
         "grader": grader.to_dict(),
         "cap": args.cap,
         "budget_usd": args.budget_usd,
@@ -469,19 +559,33 @@ def run_graded(
         },
     }
 
-    # Judge-disagreement control: one task, a grader from a different family.
+    # Judge-disagreement control: one named task, a grader from a different
+    # family. The task is named rather than taken as tasks[0]: the prior this
+    # control replaces was measured on coconot, and a control run on some other
+    # task answers a different question while printing the same field name.
     if args.second_grader or args.disagreement:
         second_spec = args.second_grader
         second = choose_second_grader(grader, second_spec)
         if second is not None:
             second = _apply_price_overrides(second, args)
+        target = getattr(args, "disagreement_task", None) or DISAGREEMENT_TASK
         if second is None or not tasks:
             print("\n  judge-disagreement control skipped: no second grader available")
             meta["disagreement"] = {
                 "skipped": "no grader from a different family is available"
             }
+        elif target not in tasks:
+            why = (
+                f"the control task {target} is not in this run's task list "
+                f"({', '.join(tasks) or 'empty'}). The control is not silently "
+                "moved to another task: the published prior was measured on "
+                f"{DISAGREEMENT_TASK} and a rate measured elsewhere is not "
+                "comparable with it. Add it to --tasks, or name a different "
+                "control task with --disagreement-task."
+            )
+            print(f"\n  judge-disagreement control SKIPPED: {why}")
+            meta["disagreement"] = {"skipped": why, "task": target}
         else:
-            target = tasks[0]
             print(f"\n  judge-disagreement control: {target} with {second.model}")
             run_b, _ = asyncio.run(
                 grade_task_async(
@@ -500,6 +604,17 @@ def run_graded(
                 f"= {100 * dis.rate:.1f}% "
                 f"[{100 * (dis.ci_low or 0):.1f}%, {100 * (dis.ci_high or 0):.1f}%]"
             )
+            if dis.n_uncomparable:
+                by_reason = ", ".join(
+                    f"{reason} {n}"
+                    for reason, n in sorted(
+                        dis.uncomparable_by_reason.items(), key=lambda kv: -kv[1]
+                    )
+                )
+                print(
+                    f"    uncomparable {dis.n_uncomparable} cells "
+                    f"(not compared as zeros): {by_reason}"
+                )
             d = dis.to_dict()
             d["routing_note"] = run_b.routing_note
             d["served_provider"] = run_b.served_provider
@@ -527,14 +642,22 @@ def cmd_graded(args: argparse.Namespace) -> int:
     prereg_commit = check_ordering_gate(out)
     smoke = is_smoke_output(out)
 
-    if args.tasks:
-        tasks: list[str] = []
-        for item in args.tasks:
-            tasks.extend(p.strip() for p in item.split(",") if p.strip())
-    else:
-        tasks = graded_task_names(DEFAULT_RESULTS)
-        if args.limit_tasks:
-            tasks = tasks[: args.limit_tasks]
+    tasks, source = resolve_graded_task_list(args)
+
+    # Printed before the first provider call, so the operator sees what is about
+    # to be driven rather than finding out from the bill.
+    print(f"graded task list ({source}): {len(tasks)} task(s)")
+    for name in tasks:
+        print(f"  {name}")
+    if source == "the inventory's model_graded class":
+        print(
+            "  WARNING: this is every task the inventory marks model_graded, not "
+            "the preregistered eight.\n"
+            "  It includes URL-fetching tasks, a dataset over the disk cap and a "
+            "gated one.\n"
+            f"  Use --first-sweep for the {len(GRADED_FIRST_SWEEP)} the "
+            "preregistration names, or --tasks to state a list."
+        )
 
     if smoke:
         print(f"SMOKE graded run into {out}/ -- exempt from the ordering gate, not a result")
@@ -584,11 +707,9 @@ def cmd_estimate(args: argparse.Namespace) -> int:
     print(f"price source: {grader.price_source}")
     print()
 
-    tasks = (
-        [t.strip() for item in args.tasks for t in item.split(",") if t.strip()]
-        if args.tasks
-        else graded_task_names(DEFAULT_RESULTS)
-    )
+    tasks, source = resolve_graded_task_list(args)
+    print(f"task list ({source}): {len(tasks)} task(s)")
+    print()
     total_calls = total_in = total_out = 0
     total_usd = 0.0
     priced = True
@@ -657,6 +778,12 @@ def cmd_report(args: argparse.Namespace) -> int:
         print(f"wrote {path}")
     print(f"{flagged} of {denom} flagged before rulings (rendered arm)")
     print(f"{flagged_raw} of {denom} flagged on the raw arm")
+    n_collisions = collision_count(floors)
+    if n_collisions:
+        print(
+            f"{n_collisions} of those rest on the format_only/majority template "
+            "collision (marked, not removed)"
+        )
     if payload.get("smoke"):
         print("smoke payload: README.md was not rewritten")
     if denom and flagged < NEGATIVE_RESULT_THRESHOLD:
@@ -755,7 +882,17 @@ def add_grader_args(parser: argparse.ArgumentParser, default_budget: float) -> N
     parser.add_argument(
         "--disagreement",
         action="store_true",
-        help="run the judge-disagreement control on the first task",
+        help=f"run the judge-disagreement control on {DISAGREEMENT_TASK}",
+    )
+    parser.add_argument(
+        "--disagreement-task",
+        default=None,
+        help=(
+            f"task the judge-disagreement control runs on (default "
+            f"{DISAGREEMENT_TASK}, the task the published prior was measured on). "
+            "The control is skipped, with the reason printed, when this task is "
+            "not in the run's task list."
+        ),
     )
     parser.add_argument(
         "--cap",
@@ -854,6 +991,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_graded.add_argument("--tasks", nargs="*", help="task names; default is all model-graded")
     p_graded.add_argument(
+        "--first-sweep",
+        action="store_true",
+        help=(
+            f"use the preregistered {len(GRADED_FIRST_SWEEP)} runnable "
+            "model-graded tasks rather than every task the inventory marks "
+            "model_graded"
+        ),
+    )
+    p_graded.add_argument(
         "--limit-tasks", type=int, default=None, help="use only the first N tasks"
     )
     p_graded.add_argument("--out", default=str(DEFAULT_RESULTS / "graded"))
@@ -866,6 +1012,14 @@ def build_parser() -> argparse.ArgumentParser:
         "estimate", help="print the graded arm's cost estimate without calling anything"
     )
     p_est.add_argument("--tasks", nargs="*")
+    p_est.add_argument(
+        "--first-sweep",
+        action="store_true",
+        help=f"price the preregistered {len(GRADED_FIRST_SWEEP)} rather than all 27",
+    )
+    p_est.add_argument(
+        "--limit-tasks", type=int, default=None, help="use only the first N tasks"
+    )
     p_est.add_argument("--out", default=str(DEFAULT_RESULTS))
     add_grader_args(p_est, GRADED_BUDGET_REAL)
     p_est.set_defaults(func=cmd_estimate)

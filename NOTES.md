@@ -737,3 +737,127 @@ behaviour the eval wants. A flag there does not mean "a content-free answer
 scores like a real one"; it means "a content-free answer reads as compliance to
 the judge". Those are different claims and the write-up must not merge them.
 When he uncomments it, the report shows the flag rate with and without.
+
+---
+
+## 2026-09-17 -- day 3, closing the graded arm's run-night holes
+
+Everything below was run today against the pinned versions. No number here is
+carried over from a plan document.
+
+### The graded arm was pointed at 27 tasks, not 8
+
+`cmd_sweep` built the graded arm's arguments with `tasks=None`, and `cmd_graded`
+then defaulted to every task the inventory marks `model_graded`. That is **27**,
+not the preregistered eight: nine `agie_*` tasks that fetch their dataset from
+`raw.githubusercontent.com` at run time, `mmmu_open` at 3.41 GiB against a
+preregistered 1.00 GiB cap, and the gated `xstest`. Nothing would have errored
+first; the arm would simply have started spending against a task list nobody had
+chosen.
+
+The eight are now a named constant, `cli.GRADED_FIRST_SWEEP`, in the order the
+preregistration lists them, passed explicitly by `sweep --first-sweep --graded`
+and by `evalfloor graded --first-sweep`. `--tasks` still overrides. The list is
+printed before the first provider call, and a run that falls back to the 27
+prints a warning naming what is in there. A test fails if the constant and the
+preregistration disagree.
+
+### `moru` runs. The exclusion note was wrong and the injection was broken
+
+The draft said, in one paragraph, that `moru` was one of the eight runnable
+tasks, and in a table four lines later that it "loads, but needs an optional
+provider dependency". Checked rather than reasoned about:
+
+* **No optional dependency.** `moru`'s import closure is `inspect_ai`,
+  `inspect_evals.*`, `numpy` and `pydantic`, all unconditional requirements of
+  `inspect_evals` 0.20.0. The only optional import anywhere in that package is
+  `matplotlib` in `moru/scripts/plot_dimensions.py`, a standalone CLI that
+  `moru/__init__.py` never imports.
+* **A harness defect instead.** `moru` declares
+  `grader_models: list[str | Model] | None = None`. `grader_task_args` decided
+  list-vs-scalar from `isinstance(param.default, list)`, and the default is
+  `None`, so it handed the task a bare `Model` and
+  `moru/scorer.py:78` raised `TypeError: 'Model' object is not iterable` --
+  after the 201-sample dataset had finished downloading. The injection now reads
+  the annotation **when the default is None and so says nothing**; a task whose
+  default is a scalar (`coconot`, `uccb`, `fortress_benign`) is unaffected, which
+  is asserted by test.
+
+With that fixed, `inspect_evals/moru` resolves, loads 201 samples and grades.
+
+### Verdict vocabularies of the other seven, measured
+
+Two of the eight return a **dict** as `Score.value`, which Inspect's generic
+`value_to_float()` cannot read: it matches no branch on a Mapping, logs a warning
+and returns **0.0**. That is instrument defect 007 in a new shape, and it would
+have zeroed every cell of both tasks.
+
+`verdict_maps.jsonl` rows may now carry a `key`, naming the entry of the dict the
+eval's own metric treats as its headline value. Each row quotes the metric code
+that makes it the headline, the same rule as every other row in that file.
+
+| task | `Score.value` | what was needed |
+|---|---|---|
+| `frontierscience` | `"C"` / `"I"` on the olympic subset, a float in [0,1] on the research subset -- **one default run drives both** | nothing; note row recording the mix |
+| `moru` | `dict[str, float]`, `{"overall": ..., "<dimension>": ...}` | `key: "overall"` |
+| `fortress_adversarial` | float in [0,1], or the string `"INVALID"` when no judge produced a valid score | nothing; `INVALID` deliberately left unmapped, which is what the eval's own `remove_invalid_samples()` does |
+| `fortress_benign` | `"C"` / `"I"` | nothing |
+| `mask` | `dict[str, str]` of `(str, Enum)` members | `key: "honesty"`, plus the four classifications the eval's metric counts |
+| `uccb` | `"C"` / `"I"` | nothing |
+| `sosbench` | `1` / `0` ints | nothing; note row recording that **1 = unsafe**, the opposite polarity to every other task here |
+
+One subtlety worth keeping: `mask` answers with `Honesty.LIE`, whose `str()` is
+`"Honesty.LIE"` and whose `.value` is `"lie"`. A map keyed on what the eval
+source says would never have matched what `str()` produced, so the mapper unwraps
+enums before looking anything up.
+
+**Measured, 2-sample graded smoke over all seven, `results/smoke/graded_vocab/`,
+total spend $0.0471.** Run twice: once with the verdict map file as it stood
+before today, once with the committed file, the second pass answering every cell
+from cache. Unmapped verdicts, before -> after:
+
+| task | unmapped | scored | other |
+|---|---|---|---|
+| `frontierscience` | 0 -> 0 | 16 -> 16 | -- |
+| `moru` | **28 -> 0** | **0 -> 28** | -- |
+| `fortress_adversarial` | 0 -> 0 | 16 -> 16 | -- |
+| `fortress_benign` | 0 -> 0 | 9 -> 9 | 19 refusals |
+| `mask` | 0 -> 0 | 0 -> 0 | **28 errors, NO RESULT** |
+| `uccb` | 0 -> 0 | 15 -> 15 | 1 refusal |
+| `sosbench` | 0 -> 0 | 28 -> 28 | -- |
+
+The second pass made **zero provider calls**. The 28 `moru` cells were rescued
+from cache by a map committed after they were paid for, which is the point of
+recording an unreadable verdict verbatim instead of coercing it to zero.
+
+### Two findings from that smoke that are not fixed here
+
+* **`mask` cannot be driven by this harness.** All 28 cells raise
+  `TypeError: 'NoneType' object is not iterable` inside its scorer, before any
+  provider call, because the scorer reads state its own solver builds and this
+  harness drives scorers directly. It reports `NO RESULT`, is excluded from the
+  denominator and is recorded in coverage -- which is the correct behaviour for
+  an unmeasured task, and means the graded denominator is 7 of the 8 attempted
+  unless the driver learns to build that state.
+* **`sosbench` spends money the meter cannot see.** It declares no grader
+  parameter, so it is `NOT REDIRECTABLE` and its scorer resolves its judge
+  through `get_model()`, i.e. `INSPECT_EVAL_MODEL`, which is a different `Model`
+  object from the one `metered()` wraps. Its 28 calls were real and billed, and
+  `measured_usage` recorded `0 calls, $0.0000`. The cost estimate still counts
+  them; the *measured* figure does not.
+
+### The judge-disagreement control, re-read from cache
+
+`results/smoke/graded/` regenerated with **0 provider calls, cache hits 140 /
+misses 0**. The figure is **unchanged at 13 of 111 = 11.7% [7.0, 19.0]**, and the
+comparison now states its complement: **29 uncomparable cells, all 29 refusals**,
+counted by reason instead of being compared as zeros. Previously
+`float(row.get("value", 0.0))` read a refusal, an ungradeable answer or an
+unmapped verdict as 0.0, so two graders that both declined would have "agreed".
+On this particular cache no cell was affected, because every non-refusal row
+carried a real value -- the defect was latent here and would have fired on any
+task with unmapped verdicts, which is every task that returns a dict.
+
+The control also ran on `tasks[0]`, whatever sorted first. It is now bound to
+`inspect_evals/coconot` -- the task the published prior was measured on -- and
+skips with a printed reason rather than moving to another task.

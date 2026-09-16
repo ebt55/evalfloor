@@ -25,9 +25,11 @@ A flagged task is not a worthless benchmark. A loose scorer inflates a number wi
 
 ## Per task, rendered arm
 
-| task | scorer | template | n | majority | uniform | best content-free | score | gap | flagged |
-|---|---|---|---|---|---|---|---|---|---|
-| `inspect_evals/coconot` | `inspect_ai/model_graded_qa` | bare | 10 | 0.0% | 0.0% | all_letters | 70.0% | +0.700 | all_letters, format_only |
+| task | scorer | template | n | majority | uniform | best content-free | score | gap | flagged | collision |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `inspect_evals/coconot` | `inspect_ai/model_graded_qa` | bare | 10 | 0.0% | 0.0% | all_letters | 70.0% | +0.700 | all_letters, format_only (note) | no |
+
+`collision` marks a flag that rests **only** on `format_only` and `majority` being the same completion. `format_only` is defined as the task's answer template carrying the placeholder `A`; `majority` is the modal target written in that same template. Where the modal target *is* `A` they are one string, they score identically, and the `>=` in the flag rule fires on a tie between a member and itself. The rule is unchanged (section 8.5: a tie flags, and weakening a rule after seeing data is worse) -- the flag is marked instead.
 
 ## What the rendering rule changed
 
@@ -116,6 +118,12 @@ Rates here are over a **capped sample**, graded by a model, not over a whole dat
 On `inspect_evals/coconot`, graders `openai/gpt-5.6-luna` and `openrouter/z-ai/glm-5.3-flash` were run over the same items. They disagreed on **13 of 111** = **11.7%** [7.0%, 19.0%].
 
 That rate is how much of this arm is judge noise rather than signal. It is compared per item, not per mean: two judges can agree on every mean while disagreeing on every item.
+
+A further **29** cells were produced by both graders but **cannot be compared**: at least one of the two rows carries no finite value. Those are excluded from the denominator rather than compared as zeros -- reading a refusal, an ungradeable answer or an unmapped verdict as 0.0 would make two graders that both declined look like two graders that agreed.
+
+| why it could not be compared | cells |
+|---|---|
+| refusal | 29 |
 
 
 ## The battery

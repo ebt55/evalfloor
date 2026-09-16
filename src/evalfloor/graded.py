@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import enum
 import hashlib
 import json
 import math
@@ -507,9 +508,28 @@ def choose_grader(explicit: str | None = None, allow_mock: bool = True) -> Grade
         f"  Set one of those, or name a judge with {JUDGE_ENV_VAR} (and a second\n"
         f"  grader for the disagreement control with {JUDGE2_ENV_VAR}).\n"
         "\n"
+        + no_judge_message()
+    )
+
+
+def no_judge_message() -> str:
+    """The body of the "no judge available" error.
+
+    Split out so a test can build it without arranging an environment with no
+    keys in it. It used to interpolate ``GRADERS['anthropic'].model``, and
+    ``GRADERS`` has no ``anthropic`` key -- the dict is openai, openrouter,
+    openai_fallback, mock -- so the one path that built this message raised
+    ``KeyError`` instead of printing it. There is no Anthropic default to name:
+    Anthropic is excluded as a judge for this arm, which is what it says now.
+    """
+    return (
         f"  Defaults when a key is present: {GRADERS['openai'].model} on OpenAI,\n"
-        f"  {GRADERS['openrouter'].model} on OpenRouter,\n"
-        f"  {GRADERS['anthropic'].model} on Anthropic (last resort).\n"
+        f"  {GRADERS['openrouter'].model} on OpenRouter.\n"
+        "\n"
+        f"  {KEY_ENV_VARS[-1]} is detected and reported, but Anthropic is NOT a\n"
+        "  judge for this arm and there is no Anthropic default to fall back to:\n"
+        f"  {sorted(DO_NOT_USE_AS_JUDGE)[0]} costs about 14x the nano arm and\n"
+        "  nothing caches at its 4,096-token minimum.\n"
         "\n"
         "  To exercise the harness without any provider, use\n"
         f"  --grader {STUB_MODEL}, which emits a fixed parseable grade and\n"
@@ -599,9 +619,34 @@ def grader_task_args(
     for name, param in sig.parameters.items():
         if name not in GRADER_PARAM_NAMES:
             continue
-        default = param.default
-        args[name] = [value] if isinstance(default, list) else value
+        args[name] = [value] if _param_wants_a_list(param) else value
     return args
+
+
+def _param_wants_a_list(param: Any) -> bool:
+    """Does this grader parameter take a **list** of models rather than one?
+
+    The default's own shape answers it whenever there is a default to read:
+    ``fortress_adversarial`` defaults ``grader_models`` to a list of three model
+    ids, ``coconot`` defaults ``grader`` to a single string and normalises a list
+    or a scalar itself.
+
+    ``moru`` is the case the default cannot answer. It declares
+    ``grader_models: list[str | Model] | None = None``, so the default is None
+    and the shape lives only in the annotation. Handing that task a bare Model
+    raises ``TypeError: 'Model' object is not iterable`` inside
+    ``moru/scorer.py:78`` -- *after* the dataset has finished downloading, which
+    is where a run night goes. The annotation is therefore read, but only when
+    the default is None and so says nothing.
+    """
+    default = param.default
+    if isinstance(default, list):
+        return True
+    if default is not None:
+        return False
+    annotation = param.annotation
+    text = (annotation if isinstance(annotation, str) else str(annotation)).lower()
+    return "list[" in text.replace(" ", "")
 
 
 #: The grade a stub grader emits. "I" = incorrect, so the stub credits nothing
@@ -959,10 +1004,38 @@ KNOWN_VALUE_STRINGS: frozenset[str] = frozenset({"C", "P", "I", "N"})
 DEFAULT_VERDICT_MAPS_PATH = pathlib.Path("verdict_maps.jsonl")
 
 
-def load_verdict_maps(path: pathlib.Path | None = None) -> dict[str, dict[str, float]]:
+@dataclass(frozen=True)
+class VerdictMap:
+    """One committed row of ``verdict_maps.jsonl``.
+
+    ``key`` exists because two of the eight graded evals return a **dict** as
+    ``Score.value`` rather than a verdict string -- ``mask`` returns
+    ``{"accuracy": ..., "honesty": ..., "honesty@n": ...}`` and ``moru`` returns
+    ``{"overall": float, "<dimension>": float, ...}``. Inspect's generic
+    ``value_to_float()`` is handed a Mapping, matches none of its branches, logs
+    a warning and returns **0.0** -- defect 007 again, in a new shape. A row that
+    names a ``key`` says which entry of that dict the eval itself treats as its
+    headline value, and the ``source`` field has to quote the metric code that
+    makes it the headline.
+
+    A row with an empty ``map`` is a **note row**: it records something about a
+    task's verdicts (a polarity, a value deliberately left unmapped) without
+    mapping anything. It is still refused at load time unless it quotes a source.
+    """
+
+    task: str
+    values: dict[str, float] = field(default_factory=dict)
+    key: str | None = None
+    note: str = ""
+
+    def get(self, verdict: str) -> float | None:
+        return self.values.get(verdict.strip().lower())
+
+
+def load_verdict_maps(path: pathlib.Path | None = None) -> dict[str, VerdictMap]:
     """Read the committed per-eval verdict vocabulary map."""
     path = path or DEFAULT_VERDICT_MAPS_PATH
-    maps: dict[str, dict[str, float]] = {}
+    maps: dict[str, VerdictMap] = {}
     if not path.exists():
         return maps
     for raw in path.read_text(encoding="utf-8").splitlines():
@@ -982,30 +1055,206 @@ def load_verdict_maps(path: pathlib.Path | None = None) -> dict[str, dict[str, f
                 f"{path}: verdict map for {task} has no `source`. Every mapping must "
                 "quote the eval source line it was read from."
             )
-        maps[task] = {str(k).strip().lower(): float(v) for k, v in mapping.items()}
+        key = row.get("key")
+        maps[task] = VerdictMap(
+            task=str(task),
+            values={str(k).strip().lower(): float(v) for k, v in mapping.items()},
+            key=str(key) if key else None,
+            note=str(row.get("note") or ""),
+        )
     return maps
 
 
 def map_verdict(
-    value: Any, task_name: str, maps: dict[str, dict[str, float]]
+    value: Any, task_name: str, maps: dict[str, VerdictMap]
 ) -> tuple[float | None, str]:
-    """``(score, raw)``. ``None`` means unmapped -- never silently zero."""
+    """``(score, raw)``. ``None`` means unmapped -- never silently zero.
+
+    ``raw`` is what gets recorded verbatim and printed in the unmapped-verdict
+    distribution, so for a dict-valued score it names the key that was read:
+    ``honesty=lie`` rather than the whole dict.
+    """
+    vmap = maps.get(task_name)
+    value = _unwrap_enum(value)
     raw = "" if value is None else str(value)
+
+    if isinstance(value, dict):
+        # A dict cannot be compared against a vocabulary; one of its entries can.
+        if vmap is None or not vmap.key:
+            return None, raw
+        if vmap.key not in value:
+            return None, f"{vmap.key} missing from {raw}"
+        value = _unwrap_enum(value[vmap.key])
+        raw = f"{vmap.key}={value}"
+
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value), raw
-    if raw in KNOWN_VALUE_STRINGS:
+    if str(value) in KNOWN_VALUE_STRINGS:
         from inspect_ai.scorer import value_to_float
 
         return value_to_float()(value), raw
-    mapping = maps.get(task_name) or {}
-    key = raw.strip().lower()
-    if key in mapping:
-        return mapping[key], raw
+    if vmap is not None:
+        mapped = vmap.get(str(value))
+        if mapped is not None:
+            return mapped, raw
     return None, raw
+
+
+def _unwrap_enum(value: Any) -> Any:
+    """The value an eval's ``(str, Enum)`` verdict actually carries.
+
+    ``mask`` answers with ``Honesty.LIE``, whose ``str()`` is ``'Honesty.LIE'``
+    and whose ``.value`` is ``'lie'``. The eval's own code compares the second,
+    and ``json.dumps`` writes the second, so a map keyed on what the eval source
+    says would never match what ``str()`` produced.
+    """
+    if isinstance(value, enum.Enum):
+        return value.value
+    return value
 
 
 class BudgetExceeded(RuntimeError):
     pass
+
+
+@dataclass
+class RunProjection:
+    """The whole arm's cost, summed before any provider call is made.
+
+    ``enforce_budget`` is called inside ``grade_task_async``, i.e. **per task**,
+    so an arm of eight tasks each comfortably under the budget could spend eight
+    times it and never trip the guard. This sums them first. It also names the
+    tasks that could not be loaded at all, so an exclusion is printed and
+    recorded rather than discovered from a failed row.
+    """
+
+    per_task: list[tuple[str, CostEstimate]] = field(default_factory=list)
+    excluded: list[tuple[str, str]] = field(default_factory=list)
+    n_calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    projected_minutes: float = 0.0
+    usd: float | None = None
+    priced: bool = True
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "n_calls": self.n_calls,
+            "input_tokens": self.input_tokens,
+            "output_tokens": self.output_tokens,
+            "projected_minutes": round(self.projected_minutes, 1),
+            "usd": round(self.usd, 4) if self.usd is not None else None,
+            "priced": self.priced,
+            "per_task": {name: est.n_calls for name, est in self.per_task},
+            "excluded": [
+                {"task": name, "reason": reason} for name, reason in self.excluded
+            ],
+        }
+
+    def describe(self) -> str:
+        lines = [
+            f"  tasks that loaded  {len(self.per_task)}",
+            f"  grading calls      {self.n_calls:,}",
+            f"  input tokens       {self.input_tokens:,} (estimated)",
+            f"  output tokens      {self.output_tokens:,} (estimated)",
+            (
+                f"  projected wall clock {self.projected_minutes / 60:.1f} h"
+                if self.projected_minutes >= 90
+                else f"  projected wall clock {self.projected_minutes:.0f} min"
+            ),
+        ]
+        if self.priced and self.usd is not None:
+            lines.append(f"  estimated total    ${self.usd:,.2f}")
+        else:
+            lines.append(
+                "  estimated total    UNKNOWN (no verified price for this grader)"
+            )
+        for name, reason in self.excluded:
+            lines.append(f"  excluded: {name}: {reason}")
+        return "\n".join(lines)
+
+
+def project_run(
+    tasks: Sequence[str],
+    grader: Grader,
+    cap: int = DEFAULT_CAP,
+    cache: "GradedCache | None" = None,
+    tier: str = DEFAULT_SERVICE_TIER,
+) -> RunProjection:
+    """Sum every task's estimate before the arm starts. Makes no provider call.
+
+    Loading a dataset costs time and disk, never money, so this runs in front of
+    the guard rather than behind it.
+    """
+    from .battery import detect_template
+
+    projection = RunProjection(priced=True)
+    with grader_active(grader):
+        for name in tasks:
+            try:
+                # The judge goes in as its spec string, not as a Model object:
+                # nothing is metered here, and constructing a provider client
+                # would make a projection that spends nothing fail on a missing
+                # key. The arm itself builds the Model when it runs.
+                task_args = grader_task_args(name, grader)
+                task = resolve_task(name, **task_args)
+                samples = task_samples(task, limit=cap)
+            except Exception as exc:
+                projection.excluded.append((name, f"{type(exc).__name__}: {exc}"[:160]))
+                continue
+            if not samples:
+                projection.excluded.append((name, "dataset loaded with no samples"))
+                continue
+            labels = label_set(samples)
+            template = detect_template(samples[0]).name
+            cached_already = 0
+            if cache is not None:
+                cached_already = sum(
+                    cache.count_for(
+                        name, scorer, samples, list(BATTERY),
+                        arms_for_template(template), grader.model,
+                    )
+                    for scorer in scorer_names(task)
+                )
+            estimate = estimate_cost(
+                samples, list(BATTERY), labels, grader, template, cap,
+                cached_already, tier,
+            )
+            projection.per_task.append((name, estimate))
+            projection.n_calls += estimate.n_calls
+            projection.input_tokens += estimate.input_tokens
+            projection.output_tokens += estimate.output_tokens
+            projection.projected_minutes += estimate.projected_minutes
+            if estimate.priced and estimate.usd is not None:
+                projection.usd = (projection.usd or 0.0) + estimate.usd
+            else:
+                projection.priced = False
+    return projection
+
+
+def enforce_run_budget(
+    projection: RunProjection, budget_usd: float, grader: Grader
+) -> None:
+    """Refuse the whole arm when the summed estimate exceeds the budget."""
+    if grader.is_mock:
+        return
+    if not projection.per_task:
+        return
+    if not projection.priced or projection.usd is None:
+        raise BudgetExceeded(
+            f"refusing to run: no verified price for grader {grader.model}, so the "
+            f"${budget_usd:.2f} budget cannot be enforced over the whole arm.\n"
+            f"  {grader.price_source}\n"
+            "Pass --price-in and --price-out to state the price explicitly, or use a "
+            "grader this project has a price for."
+        )
+    if projection.usd > budget_usd:
+        raise BudgetExceeded(
+            f"refusing to run: the whole arm is estimated at ${projection.usd:,.2f}, "
+            f"which exceeds the ${budget_usd:,.2f} budget.\n"
+            f"{projection.describe()}\n"
+            "Raise --budget-usd deliberately, lower --cap, or sweep fewer tasks."
+        )
 
 
 def enforce_budget(estimate: CostEstimate, budget_usd: float, grader: Grader) -> None:
@@ -1199,6 +1448,19 @@ class RefusalLog:
 # --------------------------------------------------------------------------
 
 
+def _jsonable(field_name: str, value: Any) -> dict[str, Any]:
+    """``{field_name: value}`` when the value survives a JSON round trip, else ``{}``.
+
+    The cache is a JSONL file, so a value it cannot serialise must simply not be
+    written rather than crash the run that produced it.
+    """
+    try:
+        json.dumps(value)
+    except (TypeError, ValueError):
+        return {}
+    return {field_name: value}
+
+
 async def _score_once(scorer: Any, sample: SampleView, completion: str) -> Any:
     from inspect_ai.scorer import Target
 
@@ -1220,7 +1482,7 @@ async def run_graded_arm(
     grader: Grader,
     cache: GradedCache,
     refusals: RefusalLog,
-    verdict_maps: dict[str, dict[str, float]] | None = None,
+    verdict_maps: dict[str, VerdictMap] | None = None,
     served_provider: str = PROVIDER_UNREPORTED,
 ) -> ArmResult:
     """One (member, seed, arm) over capped samples, cached, refusals recorded."""
@@ -1277,10 +1539,33 @@ async def run_graded_arm(
                 result.n_ungradeable += 1
                 continue
             if cached.get("unmapped_verdict") is not None:
+                # Re-apply the CURRENT map to the verdict the cache kept, rather
+                # than counting the cell unmapped for ever. A mapping added after
+                # a run -- which is a commit with a source line in it -- then
+                # fixes those cells at zero provider cost, which is the whole
+                # point of recording the verdict verbatim instead of zeroing it.
+                # `unmapped_value` carries the structured value when there was
+                # one (mask and moru score a dict); rows written before that
+                # field existed re-map from the string, which is exact for every
+                # task whose verdicts are strings.
                 verdict = str(cached["unmapped_verdict"])
-                result.n_unmapped += 1
-                result.unmapped_verdicts.setdefault(verdict, 0)
-                result.unmapped_verdicts[verdict] += 1
+                source: Any = (
+                    cached["unmapped_value"]
+                    if cached.get("unmapped_value") is not None
+                    else verdict
+                )
+                remapped, _ = map_verdict(source, task_name, verdict_maps)
+                if remapped is None:
+                    result.n_unmapped += 1
+                    result.unmapped_verdicts.setdefault(verdict, 0)
+                    result.unmapped_verdicts[verdict] += 1
+                elif not math.isfinite(remapped):
+                    result.n_ungradeable += 1
+                else:
+                    result.n_scored += 1
+                    result.score_sum += remapped
+                    if remapped >= 1.0:
+                        result.n_correct += 1
                 continue
             if cached.get("error"):
                 result.n_errors += 1
@@ -1347,6 +1632,10 @@ async def run_graded_arm(
                 key,
                 {
                     "unmapped_verdict": raw_verdict,
+                    # The structured value too, when it survives a JSON round
+                    # trip, so a map added later can be applied to what the
+                    # scorer actually returned rather than to its repr.
+                    **_jsonable("unmapped_value", score.value),
                     "grader_model": grader.model,
                     "served_provider": served_provider,
                     "grader_snapshot": snapshot,
@@ -1423,10 +1712,17 @@ class UsageMeter:
     output_tokens: int = 0
     cached_input_tokens: int = 0
     first_output: str = ""
+    #: The model id the PROVIDER reported, read off ``ModelOutput.model`` on the
+    #: first call that came back. Empty until one does. This is the only thing in
+    #: the run that can honestly be called a snapshot: everything else in the
+    #: record is the id that was *requested*.
+    first_model: str = ""
     tier: str = DEFAULT_SERVICE_TIER
 
     def record(self, output: Any) -> None:
         self.calls += 1
+        if not self.first_model:
+            self.first_model = str(getattr(output, "model", "") or "")
         if not self.first_output:
             self.first_output = (getattr(output, "completion", "") or "")[:300]
         usage = getattr(output, "usage", None)
@@ -1558,6 +1854,22 @@ def judge_model(
         return get_model(grader.model)
 
 
+#: Appended to a requested model id when no provider ever reported one, so a
+#: reader can never mistake the request for the response.
+SNAPSHOT_NOT_REPORTED = " (requested; the provider reported no model id)"
+
+
+def grader_snapshot(meter: "UsageMeter", grader: Grader) -> str:
+    """What the provider said it served, or the request marked as the request.
+
+    Until 2026-09-17 this read ``meter.first_output[:0] or grader.model``.
+    ``[:0]`` is the empty string for every input, so the left operand was always
+    falsy and the "snapshot" was always the id that had been asked for -- a field
+    that looked like a reading off the response and was a copy of the request.
+    """
+    return meter.first_model or (grader.model + SNAPSHOT_NOT_REPORTED)
+
+
 def _snapshot_from_score(score: Any, grader: Grader) -> str:
     """The model id the provider actually served, when it can be recovered."""
     for attr in ("metadata",):
@@ -1592,7 +1904,7 @@ async def grade_task_async(
     started = time.monotonic()
     run = TaskRun(task=task_name)
     run.grader_model = grader.model
-    run.grader_snapshot = grader.model
+    run.grader_snapshot = grader.model + SNAPSHOT_NOT_REPORTED
     run.capped_at = cap
 
     meter = meter if meter is not None else UsageMeter()
@@ -1692,7 +2004,7 @@ async def grade_task_async(
     run.served_provider = served_provider
     run.routing_note = routing_note(grader, served_provider, n_served, n_calls)
     run.measured_usage = meter.to_dict(grader)
-    run.grader_snapshot = meter.first_output[:0] or grader.model
+    run.grader_snapshot = grader_snapshot(meter, grader)
     run.elapsed_s = time.monotonic() - started
     return run, estimate
 
@@ -1713,6 +2025,12 @@ class Disagreement:
     grader_b: str
     n_compared: int = 0
     n_disagree: int = 0
+    #: Cells both graders produced a row for, but which cannot be compared
+    #: because at least one row carries no finite value: a refusal, an error, an
+    #: ungradeable answer, an unmapped verdict. They are counted here rather than
+    #: being compared as though they were zeros.
+    n_uncomparable: int = 0
+    uncomparable_by_reason: dict[str, int] = field(default_factory=dict)
     ci_low: float | None = None
     ci_high: float | None = None
 
@@ -1724,6 +2042,36 @@ class Disagreement:
         out = asdict(self)
         out["rate"] = self.rate
         return out
+
+
+def comparable_value(row: dict[str, Any]) -> tuple[float | None, str]:
+    """``(value, why not)`` for one cached cell.
+
+    A row with no finite ``value`` is **not** a row that scored zero. The two
+    were being collapsed: ``float(row.get("value", 0.0))`` reads a cached
+    ``unmapped_verdict`` row, an ``ungradeable`` row and a row a grader refused
+    as **0.0**, so two judges that both declined to grade a cell "agreed" on
+    zero, and a judge that scored 0.0 against one that could not be read
+    "disagreed". Those are the exact shapes instrument defects 006 and 007 pin,
+    reappearing in the one figure that is supposed to bound judge noise.
+    """
+    if row.get("refusal"):
+        return None, "refusal"
+    if row.get("error"):
+        return None, "error"
+    if row.get("ungradeable"):
+        return None, "ungradeable"
+    if row.get("unmapped_verdict") is not None:
+        return None, "unmapped_verdict"
+    if row.get("value") is None:
+        return None, "no value recorded"
+    try:
+        value = float(row["value"])
+    except (TypeError, ValueError):
+        return None, "non-numeric value"
+    if not math.isfinite(value):
+        return None, "non-finite value"
+    return value, ""
 
 
 def disagreement_from_cache(
@@ -1759,12 +2107,18 @@ def disagreement_from_cache(
                         )
                         if row_a is None or row_b is None:
                             continue
-                        if row_a.get("refusal") or row_b.get("refusal"):
-                            continue
-                        if row_a.get("error") or row_b.get("error"):
+                        value_a, why_a = comparable_value(row_a)
+                        value_b, why_b = comparable_value(row_b)
+                        if value_a is None or value_b is None:
+                            result.n_uncomparable += 1
+                            reasons = sorted({w for w in (why_a, why_b) if w})
+                            reason = " + ".join(reasons)
+                            result.uncomparable_by_reason[reason] = (
+                                result.uncomparable_by_reason.get(reason, 0) + 1
+                            )
                             continue
                         result.n_compared += 1
-                        if float(row_a.get("value", 0.0)) != float(row_b.get("value", 0.0)):
+                        if value_a != value_b:
                             result.n_disagree += 1
     result.ci_low, result.ci_high = wilson_interval(result.n_disagree, result.n_compared)
     return result

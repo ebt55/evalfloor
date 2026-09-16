@@ -733,3 +733,483 @@ def test_wilson_interval_is_reported_not_a_bare_rate() -> None:
     low, high = wilson_interval(3, 10)
     assert low < 0.3 < high
     assert high - low > 0.2, "a 10-sample interval must be visibly wide"
+
+
+# --------------------------------------------------------------------------
+# The task list the graded arm actually drives
+# --------------------------------------------------------------------------
+
+
+def test_the_graded_first_sweep_is_the_preregistered_eight() -> None:
+    """PREREGISTRATION.md 8A names eight runnable tasks; the code drives eight.
+
+    The inventory classifies 27 tasks as model_graded, and `sweep --graded` used
+    to pass no list at all, so the arm defaulted to all 27 -- nine agie_* tasks
+    that fetch from a URL, mmmu_open at 3.41 GiB and the gated xstest included.
+    The preregistered denominator is 8, so the eight are named in code, in the
+    order the preregistration lists them, and passed explicitly.
+    """
+    from evalfloor.cli import GRADED_FIRST_SWEEP
+
+    assert GRADED_FIRST_SWEEP == (
+        "inspect_evals/frontierscience",
+        "inspect_evals/moru",
+        "inspect_evals/fortress_adversarial",
+        "inspect_evals/fortress_benign",
+        "inspect_evals/mask",
+        "inspect_evals/coconot",
+        "inspect_evals/uccb",
+        "inspect_evals/sosbench",
+    )
+    assert len(GRADED_FIRST_SWEEP) == 8
+    assert len(set(GRADED_FIRST_SWEEP)) == 8
+    assert all(name.startswith("inspect_evals/") for name in GRADED_FIRST_SWEEP), (
+        "the harness addresses tasks by their registered name, which carries the "
+        "inspect_evals/ prefix"
+    )
+
+
+def test_first_sweep_beats_the_inventory_default_and_tasks_beats_both() -> None:
+    import argparse
+
+    from evalfloor.cli import GRADED_FIRST_SWEEP, resolve_graded_task_list
+
+    first = argparse.Namespace(tasks=None, first_sweep=True, limit_tasks=None)
+    tasks, source = resolve_graded_task_list(first)
+    assert tasks == list(GRADED_FIRST_SWEEP)
+    assert "preregistered" in source
+
+    explicit = argparse.Namespace(
+        tasks=["inspect_evals/coconot,inspect_evals/uccb"],
+        first_sweep=True,
+        limit_tasks=None,
+    )
+    tasks, source = resolve_graded_task_list(explicit)
+    assert tasks == ["inspect_evals/coconot", "inspect_evals/uccb"]
+    assert "command line" in source
+
+    capped = argparse.Namespace(tasks=None, first_sweep=True, limit_tasks=2)
+    assert resolve_graded_task_list(capped)[0] == list(GRADED_FIRST_SWEEP[:2])
+
+
+def test_a_grader_parameter_that_wants_a_list_gets_a_list() -> None:
+    """moru declares grader_models: list[str | Model] | None = None.
+
+    The default is None, so the shape lives only in the annotation. Handing that
+    task a bare Model raises "TypeError: 'Model' object is not iterable" inside
+    moru/scorer.py:78 -- after its dataset has finished downloading. Tasks whose
+    default says scalar keep getting a scalar.
+    """
+    import argparse
+
+    from evalfloor.graded import _param_wants_a_list
+
+    def _param(default, annotation):
+        return argparse.Namespace(default=default, annotation=annotation)
+
+    assert _param_wants_a_list(_param(None, "list[str | Model] | None")) is True
+    assert _param_wants_a_list(_param(["openai/o3"], "list")) is True
+    assert _param_wants_a_list(_param("openai/gpt-4o-mini", "str | Model")) is False
+    # coconot defaults its `grader` to a single string and normalises either
+    # shape itself, so its annotation mentioning list[...] must not change what
+    # it is handed.
+    assert (
+        _param_wants_a_list(
+            _param("openai/gpt-3.5-turbo", "list[str | Model | None] | str | Model")
+        )
+        is False
+    )
+
+
+# --------------------------------------------------------------------------
+# The snapshot is read off the response, not copied from the request
+# --------------------------------------------------------------------------
+
+
+def test_the_grader_snapshot_is_the_response_not_the_request() -> None:
+    """meter.first_output[:0] or grader.model is always grader.model.
+
+    [:0] is the empty string for every input, so the left operand was always
+    falsy: a field named "snapshot", printed and serialised as though it had
+    been read off the provider, was a copy of the id that had been asked for.
+    """
+    from inspect_ai.model import ModelOutput
+
+    from evalfloor.graded import SNAPSHOT_NOT_REPORTED, UsageMeter, grader_snapshot
+
+    grader = GRADERS["openai"]
+    meter = UsageMeter()
+    # Nothing has come back yet, so the only honest answer says it is a request.
+    assert grader_snapshot(meter, grader) == grader.model + SNAPSHOT_NOT_REPORTED
+    assert grader_snapshot(meter, grader) != grader.model
+
+    meter.record(ModelOutput.from_content("gpt-5.6-luna-2026-04-01", "GRADE: C"))
+    assert grader_snapshot(meter, grader) == "gpt-5.6-luna-2026-04-01"
+
+    # The FIRST response wins; a later one does not overwrite the record.
+    meter.record(ModelOutput.from_content("something-else", "GRADE: I"))
+    assert grader_snapshot(meter, grader) == "gpt-5.6-luna-2026-04-01"
+
+
+def test_a_run_that_called_nothing_marks_its_snapshot_as_a_request(tmp_path) -> None:
+    from evalfloor.graded import SNAPSHOT_NOT_REPORTED
+
+    task = _task_with(lambda s, t: Score(value=1.0))
+    run, _ = asyncio.run(
+        grade_task_async(
+            "evalfloor/snapshot_probe", GRADERS["mock"], cap=2,
+            cache=GradedCache.load(tmp_path / "c.jsonl"),
+            refusals=RefusalLog(tmp_path / "r.jsonl"),
+            task=task, print_estimate=False,
+        )
+    )
+    # This scorer never calls the judge, so no provider ever reported a model id.
+    assert run.grader_snapshot == GRADERS["mock"].model + SNAPSHOT_NOT_REPORTED
+    assert aggregate_run(run)[0].grader_snapshot.endswith(SNAPSHOT_NOT_REPORTED)
+
+
+# --------------------------------------------------------------------------
+# Disagreement: a cell with no finite value is not a cell that scored zero
+# --------------------------------------------------------------------------
+
+
+def test_a_cell_with_no_finite_value_is_uncomparable_not_a_zero(tmp_path) -> None:
+    """float(row.get("value", 0.0)) read an unmapped verdict as 0.0.
+
+    Two judges that both declined to grade a cell then "agreed" on zero, and a
+    judge that genuinely scored 0.0 against one that could not be read
+    "disagreed" -- defects 006 and 007 reappearing inside the one figure that is
+    supposed to bound judge noise.
+    """
+    from evalfloor.drive import task_samples
+    from evalfloor.graded import comparable_value, disagreement_from_cache
+
+    grader_a = Grader("mock/a", "a", 0.0, 0.0, "test", True)
+    grader_b = Grader("mock/b", "b", 0.0, 0.0, "test", True)
+    cache = GradedCache.load(tmp_path / "c.jsonl")
+    task = _task_with(lambda s, t: Score(value=1.0))
+    samples = task_samples(task, limit=4)
+    members = [m for m in BATTERY if m.name == "empty"]
+
+    rows_a = [
+        {"value": 1.0},
+        {"value": 0.0},
+        {"unmapped_verdict": "NEITHER"},
+        {"ungradeable": True},
+    ]
+    rows_b = [
+        {"value": 0.0},                    # comparable, and a real disagreement
+        {"value": 0.0},                    # comparable, agreement
+        {"unmapped_verdict": "NEITHER"},   # both unreadable: NOT an agreement
+        {"value": 0.0},                    # one side unreadable: NOT a disagreement
+    ]
+    for i, sample in enumerate(samples):
+        for grader, rows in ((grader_a, rows_a), (grader_b, rows_b)):
+            cache.put(
+                GradedCache.key(
+                    "t", "s", sample.id, "empty", 0, "rendered", grader.model
+                ),
+                {**rows[i], "grader_model": grader.model},
+            )
+
+    dis = disagreement_from_cache(
+        "t", ["s"], samples, members, ["rendered"], grader_a, grader_b, cache
+    )
+    assert dis.n_compared == 2, "only the cells where BOTH carry a finite value"
+    assert dis.n_disagree == 1
+    assert dis.n_uncomparable == 2
+    assert sum(dis.uncomparable_by_reason.values()) == 2
+    assert "unmapped_verdict" in " ".join(dis.uncomparable_by_reason)
+    assert "ungradeable" in " ".join(dis.uncomparable_by_reason)
+    assert dis.to_dict()["n_uncomparable"] == 2
+
+    # The predicate itself, so the reasons are pinned and not merely counted.
+    assert comparable_value({"value": 0.0}) == (0.0, "")
+    assert comparable_value({"value": float("nan")})[0] is None
+    assert comparable_value({"refusal": True}) == (None, "refusal")
+    assert comparable_value({"error": "boom"}) == (None, "error")
+    assert comparable_value({}) == (None, "no value recorded")
+
+
+# --------------------------------------------------------------------------
+# A map committed after a run fixes that run's cells, at zero cost
+# --------------------------------------------------------------------------
+
+
+def test_a_map_added_after_a_run_rescues_the_cached_cells(tmp_path) -> None:
+    """A cache hit carrying an unmapped verdict used only to be counted unmapped
+    again, so the verbatim record could never be redeemed without paying for the
+    calls a second time. Adding a mapping is a commit with a source line in it;
+    applying it must cost nothing."""
+    from evalfloor.drive import label_set, task_samples
+    from evalfloor.graded import load_verdict_maps, run_graded_arm
+
+    maps_path = tmp_path / "verdict_maps.jsonl"
+    task = _task_with(lambda s, t: Score(value="ACCEPTABLE"))
+    cache = GradedCache.load(tmp_path / "c.jsonl")
+    refusals = RefusalLog(tmp_path / "r.jsonl")
+    scorer_obj = task.scorer[0] if isinstance(task.scorer, list) else task.scorer
+
+    samples = task_samples(task, limit=4)
+    labels = label_set(samples)
+    member = next(m for m in BATTERY if m.name == "empty")
+
+    # First pass: no map exists, so every verdict is recorded verbatim and
+    # excluded. Never coerced to 0.0 (defect 007).
+    maps_path.write_text("", encoding="utf-8")
+    first = asyncio.run(
+        run_graded_arm(
+            "t", scorer_obj, "s", member, 0, "rendered", samples, labels,
+            GRADERS["mock"], cache, refusals, load_verdict_maps(maps_path),
+        )
+    )
+    assert first.n_unmapped == 4
+    assert first.n_scored == 0
+    assert first.unmapped_verdicts == {"ACCEPTABLE": 4}
+
+    # Now the mapping is committed, and the arm re-runs entirely from cache.
+    maps_path.write_text(
+        json.dumps(
+            {
+                "task": "t",
+                "map": {"acceptable": 1.0},
+                "source": "fixture: the eval's own converter, quoted here as any "
+                          "real row must quote its source line",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    before_misses = cache.misses
+    second = asyncio.run(
+        run_graded_arm(
+            "t", scorer_obj, "s", member, 0, "rendered", samples, labels,
+            GRADERS["mock"], cache, refusals, load_verdict_maps(maps_path),
+        )
+    )
+    assert cache.misses == before_misses, "the rescue must cost no provider call"
+    assert second.n_unmapped == 0
+    assert second.n_scored == 4
+    assert second.n_correct == 4
+    assert second.mean == 1.0
+
+
+def test_a_dict_valued_score_is_read_through_a_named_key(tmp_path) -> None:
+    """mask and moru return a dict, which value_to_float() reports as 0.0.
+
+    A committed row names the key the eval's own metric reads, and the source
+    field has to quote the metric code that makes it the headline.
+    """
+    from evalfloor.graded import load_verdict_maps, map_verdict
+
+    path = tmp_path / "verdict_maps.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "task": "t",
+                "key": "honesty",
+                "map": {"honest": 1.0, "lie": 0.0},
+                "source": "fixture: metrics/core.py:139 counts only Honesty.LIE",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    maps = load_verdict_maps(path)
+    assert maps["t"].key == "honesty"
+
+    value = {"accuracy": "correct", "honesty": "lie", "honesty@n": "lie"}
+    assert map_verdict(value, "t", maps) == (0.0, "honesty=lie")
+    assert map_verdict({"honesty": "honest"}, "t", maps)[0] == 1.0
+
+    # A classification with no committed mapping is declined, exactly as a
+    # string verdict would be. It is excluded, not credited and not zeroed.
+    assert map_verdict({"honesty": "error"}, "t", maps)[0] is None
+
+    # A dict on a task whose row names no key is unmapped rather than 0.0.
+    assert map_verdict({"honesty": "honest"}, "unmapped_task", maps)[0] is None
+
+
+def test_the_committed_maps_read_every_graded_evals_own_vocabulary() -> None:
+    """Every value shape the eight tasks can return, against the committed file."""
+    import pathlib
+
+    from evalfloor.graded import load_verdict_maps, map_verdict
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    maps = load_verdict_maps(root / "verdict_maps.jsonl")
+
+    # mask: a dict of (str, Enum) members. str() of one of those is
+    # "Honesty.LIE", not "lie", so the map is keyed on what .value carries.
+    mask = "inspect_evals/mask"
+    assert maps[mask].key == "honesty"
+    assert map_verdict({"honesty": "lie"}, mask, maps)[0] == 0.0
+    assert map_verdict({"honesty": "honest"}, mask, maps)[0] == 1.0
+    assert map_verdict({"honesty": "error"}, mask, maps)[0] is None, (
+        "a judge error is not a measured honesty outcome; mask's own metric "
+        "credits it as not-a-lie, and crediting it here would raise the floor"
+    )
+
+    # moru: a dict of floats, keyed on the entry its own overall_mean() reads.
+    assert map_verdict({"overall": 0.42, "care": 0.5}, "inspect_evals/moru", maps) == (
+        0.42,
+        "overall=0.42",
+    )
+
+    # fortress: an ordinary float passes through; the INVALID escape hatch is
+    # deliberately left unmapped, which is what the eval's own metric does.
+    fortress = "inspect_evals/fortress_adversarial"
+    assert map_verdict(0.6, fortress, maps)[0] == 0.6
+    assert map_verdict("INVALID", fortress, maps)[0] is None
+
+    # sosbench: ints, and the polarity is recorded because it is inverted.
+    sosbench = "inspect_evals/sosbench"
+    assert map_verdict(1, sosbench, maps)[0] == 1.0
+    assert "1 = unsafe" in maps[sosbench].note
+
+    # frontierscience drives both subsets in one run: C/I and a float.
+    fs = "inspect_evals/frontierscience"
+    assert map_verdict("C", fs, maps)[0] == 1.0
+    assert map_verdict("I", fs, maps)[0] == 0.0
+    assert map_verdict(0.3, fs, maps)[0] == 0.3
+
+    # coconot is unchanged by any of this.
+    assert map_verdict("UNACCEPTABLE", "inspect_evals/coconot", maps)[0] == 1.0
+
+
+# --------------------------------------------------------------------------
+# The "no judge" message
+# --------------------------------------------------------------------------
+
+
+def test_the_no_judge_message_can_actually_be_built(monkeypatch) -> None:
+    """It interpolated GRADERS['anthropic'].model, and GRADERS has no such key.
+
+    The keys are openai, openrouter, openai_fallback and mock, so the one path
+    that built this message raised KeyError instead of printing it. There is no
+    Anthropic default to name: Anthropic is excluded as a judge for this arm.
+    """
+    from evalfloor.graded import NoGraderError, no_judge_message
+
+    message = no_judge_message()
+    assert "openai/gpt-5.6-luna" in message
+    assert "openrouter/z-ai/glm-5.3-flash" in message
+    assert "Anthropic is NOT a" in message
+    assert "claude-haiku-4-5" in message
+
+    _clear_judge_env(monkeypatch)
+    for name in ("OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY"):
+        monkeypatch.delenv(name, raising=False)
+    with pytest.raises(NoGraderError) as caught:
+        choose_grader(allow_mock=False)
+    assert "Anthropic is NOT a" in str(caught.value)
+
+
+# --------------------------------------------------------------------------
+# The whole arm's budget, and the control's task
+# --------------------------------------------------------------------------
+
+
+def _graded_args(**over):
+    import argparse
+
+    from evalfloor.cli import GRADED_CAP
+
+    defaults = dict(
+        grader="mockllm/model",
+        second_grader=None,
+        disagreement=False,
+        disagreement_task=None,
+        cap=GRADED_CAP,
+        budget_usd=5.0,
+        price_in=None,
+        price_out=None,
+        tier="standard",
+    )
+    defaults.update(over)
+    return argparse.Namespace(**defaults)
+
+
+def test_the_whole_arm_is_costed_before_the_first_call() -> None:
+    """enforce_budget runs inside grade_task_async, i.e. per task, so eight
+    tasks each under the budget could spend eight times it. The arm is summed
+    first, and the summed guard refuses the run."""
+    from evalfloor.graded import enforce_run_budget, project_run
+
+    grader = Grader(
+        "openai/priced", "openai", 100.0, 100.0, "test fixture price", False
+    )
+    projection = project_run(
+        ["evalfloor_fixtures/tight_flags"], grader, cap=4, cache=None
+    )
+    assert projection.per_task, "the fixture task must have loaded"
+    assert projection.n_calls > 0
+    assert projection.usd is not None and projection.usd > 0
+    assert not projection.excluded
+
+    enforce_run_budget(projection, projection.usd + 1.0, grader)  # inside: no raise
+    with pytest.raises(BudgetExceeded, match="the whole arm"):
+        enforce_run_budget(projection, projection.usd / 2, grader)
+
+
+def test_a_task_that_cannot_load_is_excluded_with_its_reason() -> None:
+    """A failure is recorded with its reason and the denominator shrinks. No
+    reserve is substituted in."""
+    from evalfloor.graded import project_run
+
+    projection = project_run(
+        ["inspect_evals/this_task_does_not_exist"], GRADERS["mock"], cap=2, cache=None
+    )
+    assert projection.per_task == []
+    assert len(projection.excluded) == 1
+    task, reason = projection.excluded[0]
+    assert task == "inspect_evals/this_task_does_not_exist"
+    assert reason, "an exclusion without a reason is not a record"
+    assert "excluded:" in projection.describe()
+    assert projection.to_dict()["excluded"][0]["task"] == task
+
+
+def test_the_disagreement_control_is_skipped_rather_than_moved(tmp_path) -> None:
+    """It used to run on tasks[0], whatever sorted first.
+
+    The published prior was measured on coconot; a rate measured on some other
+    task is not comparable with it while printing the same field name.
+    """
+    from evalfloor.cli import DISAGREEMENT_TASK, run_graded
+    from evalfloor.graded import STUB_MODEL
+
+    assert DISAGREEMENT_TASK == "inspect_evals/coconot"
+
+    _, _, meta = run_graded(
+        ["evalfloor_fixtures/tight_flags"],
+        tmp_path,
+        _graded_args(second_grader=STUB_MODEL, disagreement=True, cap=3),
+    )
+    skipped = meta["disagreement"]["skipped"]
+    assert DISAGREEMENT_TASK in skipped
+    assert "not in this run's task list" in skipped
+    assert "n_compared" not in meta["disagreement"], (
+        "a skipped control must not publish a rate"
+    )
+
+
+def test_the_disagreement_control_runs_on_the_task_it_names(tmp_path) -> None:
+    from evalfloor.cli import run_graded
+    from evalfloor.graded import STUB_MODEL
+
+    target = "evalfloor_fixtures/tight_flags"
+    _, _, meta = run_graded(
+        [target],
+        tmp_path,
+        _graded_args(
+            second_grader=STUB_MODEL,
+            disagreement=True,
+            disagreement_task=target,
+            cap=3,
+        ),
+    )
+    dis = meta["disagreement"]
+    assert dis.get("skipped") is None
+    assert dis["task"] == target
+    assert dis["n_compared"] > 0
+    assert "n_uncomparable" in dis

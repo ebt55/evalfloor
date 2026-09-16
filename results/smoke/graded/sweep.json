@@ -32,6 +32,7 @@
     },
     "n_compared": 111,
     "n_disagree": 13,
+    "n_uncomparable": 29,
     "rate": 0.11711711711711711,
     "routing_note": "pinned to DeepInfra, served by DeepInfra on 136 of 140 calls; the other 4 recorded no provider at all, which is a gap in the record rather than a different provider -- `allow_fallbacks: false` means a call served by any other provider would have failed instead",
     "served_counts": {
@@ -39,7 +40,10 @@
       "unreported": 4
     },
     "served_provider": "DeepInfra",
-    "task": "inspect_evals/coconot"
+    "task": "inspect_evals/coconot",
+    "uncomparable_by_reason": {
+      "refusal": 29
+    }
   },
   "floors": [
     {
@@ -49,6 +53,8 @@
       "best_member": "all_letters",
       "best_member_raw": "",
       "capped_at": 10,
+      "collision": false,
+      "collision_note": "",
       "error": null,
       "first_error": null,
       "flagged": true,
@@ -61,7 +67,7 @@
       "graded": true,
       "grader_injected_via": "grader",
       "grader_model": "openai/gpt-5.6-luna",
-      "grader_snapshot": "openai/gpt-5.6-luna",
+      "grader_snapshot": "openai/gpt-5.6-luna (requested; the provider reported no model id)",
       "majority": 0.0,
       "majority_label": "",
       "majority_raw": 0.0,
@@ -245,7 +251,7 @@
       "unmapped_verdicts": {}
     }
   ],
-  "generated_at": "2026-09-16T17:31:40+00:00",
+  "generated_at": "2026-09-16T20:33:45+00:00",
   "graded": true,
   "grader": {
     "family": "openai",
@@ -256,7 +262,7 @@
     "price_in_per_mtok": 0.2,
     "price_out_per_mtok": 1.2,
     "price_source": "profile-update-aug2026/decision-2026-09-15/F-economy-plan.md S1 workload 1 (verified 2026-09-15), with ids cross-checked against ai-incident-response/dosecurve/analysis/prices.json and harness/providers/",
-    "verified_served": null
+    "verified_served": true
   },
   "keys_present": {
     "ANTHROPIC_API_KEY": false,
@@ -272,6 +278,18 @@
   "preregistration_commit": null,
   "preregistration_path": "PREREGISTRATION.md",
   "refusals_path": "results\\smoke\\graded\\refusals.jsonl",
+  "run_projection": {
+    "excluded": [],
+    "input_tokens": 44191,
+    "n_calls": 0,
+    "output_tokens": 35000,
+    "per_task": {
+      "inspect_evals/coconot": 0
+    },
+    "priced": true,
+    "projected_minutes": 0.0,
+    "usd": 0.0508
+  },
   "runs": [
     {
       "answer_template": "bare",
@@ -614,11 +632,11 @@
         }
       ],
       "capped_at": 10,
-      "elapsed_s": 6.695,
+      "elapsed_s": 2.393,
       "error": null,
       "grader_injected_via": "grader",
       "grader_model": "openai/gpt-5.6-luna",
-      "grader_snapshot": "openai/gpt-5.6-luna",
+      "grader_snapshot": "openai/gpt-5.6-luna (requested; the provider reported no model id)",
       "labels_closed": true,
       "majority_label": "",
       "majority_share": 1.0,
