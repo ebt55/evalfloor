@@ -18,7 +18,7 @@ import pathlib
 from typing import Any, Sequence
 
 from . import installed_pins
-from .aggregate import TaskFloor, flag_rate
+from .aggregate import TaskFloor, collision_count, flag_rate
 from .battery import (
     ARMS,
     BATTERY,
@@ -139,6 +139,18 @@ def render_matrix(
             f"it is **{flagged_raw} of {denom}**. The headline uses the rendered arm, "
             "as preregistered. `coverage.md` says what is not in this denominator."
         )
+        n_collisions = collision_count(floors_after)
+        if n_collisions:
+            lines.append("")
+            lines.append(
+                f"Of those {flagged_after}, **{n_collisions} rest on the template "
+                "collision**: the only flagging member is `format_only` and the string "
+                "it was scored on is the string `majority` was scored on, so the flag "
+                "is a tie between a member and itself. Preregistration section 8.5 "
+                "keeps the tie rule and requires the flag to be marked rather than "
+                "silently counted; the marked rows carry **yes** in the `collision` "
+                "column below."
+            )
         if flagged_after < NEGATIVE_RESULT_THRESHOLD:
             lines.append("")
             lines.append(
@@ -176,25 +188,44 @@ def render_matrix(
         "score",
         "gap",
         "flagged",
+        "collision",
     ]
     lines.append("| " + " | ".join(header) + " |")
     lines.append("|" + "---|" * len(header))
+    collided: list[TaskFloor] = []
     for f in floors_after:
         if f.error:
             lines.append(
                 f"| `{f.task}` | - | - | - | - | - | - | - | - | error: "
-                f"{_esc(f.error)[:60]} |"
+                f"{_esc(f.error)[:60]} | - |"
             )
             continue
         uniform = _pct(f.uniform) if f.uniform is not None else "n/a"
         flagged = ", ".join(f.flagged_by) if f.flagged else "no"
         if f.ruling:
             flagged += f" ({f.ruling})"
+        if f.collision:
+            collided.append(f)
         lines.append(
             f"| `{f.task}` | `{_esc(f.scorer)}` | {f.answer_template} | {f.n_samples} | "
             f"{_pct(f.majority)} | {uniform} | {f.best_member or '-'} | "
-            f"{_pct(f.best_mean)} | {f.gap_to_majority:+.3f} | {flagged} |"
+            f"{_pct(f.best_mean)} | {f.gap_to_majority:+.3f} | {flagged} | "
+            f"{'**yes**' if f.collision else 'no'} |"
         )
+    lines.append("")
+    lines.append(
+        "`collision` marks a flag that rests **only** on `format_only` and `majority` "
+        "being the same completion. `format_only` is defined as the task's answer "
+        "template carrying the placeholder `A`; `majority` is the modal target written "
+        "in that same template. Where the modal target *is* `A` they are one string, "
+        "they score identically, and the `>=` in the flag rule fires on a tie between "
+        "a member and itself. The rule is unchanged (section 8.5: a tie flags, and "
+        "weakening a rule after seeing data is worse) -- the flag is marked instead."
+    )
+    if collided:
+        lines.append("")
+        for f in collided:
+            lines.append(f"* `{f.task}`: {_esc(f.collision_note)}")
     lines.append("")
 
     lines.append("## What the rendering rule changed")
@@ -600,6 +631,25 @@ def render_graded_section(floors: Sequence[TaskFloor], payload: dict[str, Any]) 
                 "It is compared per item, not per mean: two judges can agree on every "
                 "mean while disagreeing on every item."
             )
+            n_uncomparable = dis.get("n_uncomparable", 0)
+            if n_uncomparable:
+                lines.append("")
+                lines.append(
+                    f"A further **{n_uncomparable}** cells were produced by both "
+                    "graders but **cannot be compared**: at least one of the two rows "
+                    "carries no finite value. Those are excluded from the denominator "
+                    "rather than compared as zeros -- reading a refusal, an "
+                    "ungradeable answer or an unmapped verdict as 0.0 would make two "
+                    "graders that both declined look like two graders that agreed."
+                )
+                lines.append("")
+                lines.append("| why it could not be compared | cells |")
+                lines.append("|---|---|")
+                for reason, n in sorted(
+                    (dis.get("uncomparable_by_reason") or {}).items(),
+                    key=lambda kv: (-kv[1], kv[0]),
+                ):
+                    lines.append(f"| {_esc(reason)} | {n} |")
         lines.append("")
     return "\n".join(lines)
 
@@ -686,6 +736,25 @@ def render_coverage(
     else:
         lines.append("None. Every task attempted in this run produced a scored floor.")
     lines.append("")
+
+    excluded_at_projection = (payload.get("run_projection") or {}).get("excluded") or []
+    if excluded_at_projection:
+        lines.append("## Excluded before the first provider call")
+        lines.append("")
+        lines.append(
+            "These tasks were in the run's task list and could not be loaded when the "
+            "arm was projected, so no grading call was made for them. The denominator "
+            "shrinks by exactly this many and says so here. **No substitution is "
+            "performed**: a reserve is not silently swapped in."
+        )
+        lines.append("")
+        lines.append("| task | reason |")
+        lines.append("|---|---|")
+        for row in excluded_at_projection:
+            lines.append(
+                f"| `{_esc(row.get('task', '?'))}` | {_esc(row.get('reason', ''))[:180]} |"
+            )
+        lines.append("")
 
     lines.append(f"## Every task ({len(inventory)} rows)")
     lines.append("")
@@ -837,10 +906,129 @@ INSTRUMENT_DEFECT_ROWS: tuple[tuple[str, str, str], ...] = (
 )
 
 
+# --------------------------------------------------------------------------
+# Which payload the README reads
+#
+# render_readme computes the headline from whatever floors it is handed, and
+# `_regenerate` used to hand it the floors of whichever arm had just run. So a
+# `sweep --first-sweep --graded` wrote the deterministic headline into README.md
+# and then, seconds later, overwrote it with the graded arm's -- a headline whose
+# denominator is 8 capped samples instead of 58 whole datasets, under a sentence
+# that says "of the whole collection". Nothing failed; the file just ended up
+# quoting the wrong arm, and which arm it quoted depended on command order.
+#
+# The README is therefore assembled from BOTH payloads on disk, whichever
+# command triggered the regeneration: the deterministic sweep supplies the
+# headline, the graded sweep supplies the graded section, and order stops
+# mattering.
+# --------------------------------------------------------------------------
+
+DETERMINISTIC_SWEEP = "sweep.json"
+GRADED_SWEEP = "graded/sweep.json"
+
+
+def results_root(out_dir: pathlib.Path) -> pathlib.Path:
+    """The results root for an output directory that may be an arm inside it."""
+    return out_dir.parent if out_dir.name == "graded" else out_dir
+
+
+def readme_arms(
+    payload: dict[str, Any],
+    floors_after: Sequence[TaskFloor],
+    out_dir: pathlib.Path,
+    rules: Sequence[Any],
+) -> dict[str, Any]:
+    """Both arms for the README: the one just run, plus the other one from disk.
+
+    Returns ``{"floors", "payload", "graded_floors", "graded_payload"}`` where
+    ``floors``/``payload`` are always the **deterministic** arm's.
+    """
+    from .rulings import apply_rulings
+
+    def _load(path: pathlib.Path) -> tuple[list[TaskFloor], dict[str, Any] | None]:
+        if not path.exists():
+            return [], None
+        loaded = read_sweep(path)
+        if loaded.get("smoke"):
+            # A smoke payload is a harness check, not a result, and must never
+            # reach the README by the side door of the other arm's regenerate.
+            return [], None
+        after, _, _ = apply_rulings(floors_from_payload(loaded), list(rules))
+        return after, loaded
+
+    root = results_root(out_dir)
+    if payload.get("arm") == "graded":
+        det_floors, det_payload = _load(root / DETERMINISTIC_SWEEP)
+        return {
+            "floors": det_floors,
+            "payload": det_payload or {},
+            "graded_floors": list(floors_after),
+            "graded_payload": payload,
+        }
+    graded_floors, graded_payload = _load(root / GRADED_SWEEP)
+    return {
+        "floors": list(floors_after),
+        "payload": payload,
+        "graded_floors": graded_floors,
+        "graded_payload": graded_payload,
+    }
+
+
+def render_readme_graded(
+    floors: Sequence[TaskFloor], payload: dict[str, Any]
+) -> list[str]:
+    """The README's paragraph about the graded arm, from the graded payload only.
+
+    Never added to the deterministic rate. One arm is exact over whole datasets
+    and free; the other is a capped sample graded by a model that can be wrong.
+    """
+    flagged, denom = flag_rate(floors)
+    grader = payload.get("grader") or {}
+    lines = ["## The model-graded arm", ""]
+    lines.append(
+        f"**{flagged} of {denom}** model-graded tasks have a content-free floor that "
+        "clears their own majority baseline **at the Wilson 95% lower bound** -- a "
+        "stricter rule than the deterministic arm's, because these rates are over a "
+        f"capped sample of {payload.get('cap', '?')} items per task per member rather "
+        "than a whole dataset. This number is **never added** to the one above: the "
+        "two arms have different denominators, different rules and different costs. "
+        "Full tables in [`results/graded/floor_matrix.md`]"
+        "(results/graded/floor_matrix.md)."
+    )
+    lines.append("")
+    lines.append(
+        f"Judged by `{_esc(grader.get('model', 'unknown'))}`. "
+        + (
+            "**This run used a mock grader and says nothing about any eval.** "
+            if grader.get("is_mock")
+            else ""
+        )
+    )
+    dis = payload.get("disagreement") or {}
+    if dis and not dis.get("skipped"):
+        lines.append("")
+        lines.append(
+            f"Judge-disagreement control on `{_esc(dis.get('task'))}`, against "
+            f"`{_esc(dis.get('grader_b'))}`: **{dis.get('n_disagree', 0)} of "
+            f"{dis.get('n_compared', 0)}** comparable cells flip on a change of judge "
+            f"= {100 * dis.get('rate', 0.0):.1f}% "
+            f"[{100 * (dis.get('ci_low') or 0.0):.1f}%, "
+            f"{100 * (dis.get('ci_high') or 0.0):.1f}%]. That bounds the judge noise "
+            "in every graded figure above; it does not remove it."
+        )
+    elif dis.get("skipped"):
+        lines.append("")
+        lines.append(f"Judge-disagreement control **skipped**: {_esc(dis['skipped'])}")
+    lines.append("")
+    return lines
+
+
 def render_readme(
     floors: Sequence[TaskFloor] | None,
     inventory: Sequence[dict[str, Any]] | None,
     payload: dict[str, Any] | None = None,
+    graded_floors: Sequence[TaskFloor] | None = None,
+    graded_payload: dict[str, Any] | None = None,
 ) -> str:
     """The README, with the number and the denominator first.
 
@@ -865,6 +1053,15 @@ def render_readme(
             f"On the raw arm -- members written plainly, ignoring each task's answer "
             f"template -- it is {flagged_raw} of {denom}."
         )
+        n_collisions = collision_count(floors)
+        if n_collisions:
+            secondary += (
+                f" Of the {flagged} flagged, **{n_collisions} rest on the template "
+                "collision** -- the only flagging member is `format_only` and the "
+                "string it was scored on is `majority`'s own string, so the flag is a "
+                "tie between a member and itself. The rule is unchanged and the flags "
+                "are marked; `results/floor_matrix.md` names them."
+            )
         echo_line = echo_headline(floors)
     else:
         headline = (
@@ -894,6 +1091,9 @@ def render_readme(
     lines.append("")
     lines.extend(_prereg_block(payload))
     lines.append("")
+
+    if graded_payload:
+        lines.extend(render_readme_graded(graded_floors or [], graded_payload))
 
     lines.append("## What this is")
     lines.append("")
@@ -1137,8 +1337,16 @@ def write_all(
     written.append(rulings_md)
 
     if readme_path is not None:
+        arms = readme_arms(payload, floors_after, out_dir, rules)
         readme_path.write_text(
-            render_readme(floors_after, inventory, payload), encoding="utf-8"
+            render_readme(
+                arms["floors"],
+                inventory,
+                arms["payload"],
+                graded_floors=arms["graded_floors"],
+                graded_payload=arms["graded_payload"],
+            ),
+            encoding="utf-8",
         )
         written.append(readme_path)
 

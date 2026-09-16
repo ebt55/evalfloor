@@ -95,6 +95,46 @@ def tight_flags() -> Task:
     )
 
 
+def _collision_samples() -> list[Sample]:
+    """Targets that are literally the answer template with a placeholder in it.
+
+    ``format_only`` is *defined* as ``ANSWER: A``, and ``majority`` is the modal
+    target. Here the modal target **is** ``ANSWER: A``, so the two members are
+    the same string and score identically -- preregistration section 8.5's
+    collision, reproduced without needing a multiple-choice task.
+
+    ``exact()`` rather than ``includes()`` on purpose: under ``includes()`` the
+    ``all_labels`` member (``ANSWER: A ANSWER: B``) contains both targets as
+    substrings and would flag as well, and the collision mark is defined for a
+    flag whose **only** flagging member is ``format_only``.
+    """
+    return [
+        Sample(
+            id=i,
+            input="Pick an option and write it down.",
+            # Two thirds "ANSWER: A", so the majority line is 0.667 and it is
+            # also the string format_only carries.
+            target="ANSWER: A" if i % 3 else "ANSWER: B",
+        )
+        for i in range(FIXTURE_N)
+    ]
+
+
+@task(name="evalfloor_fixtures/template_collision")
+def template_collision() -> Task:
+    """FLAGGED, and the flag must be MARKED as resting on the collision.
+
+    The flag is real under the preregistered rule -- a tie flags -- and it is a
+    tie between a member and itself. Section 8.5 keeps the rule and requires the
+    mark, so that the collision is visible in the published rate rather than
+    silently inflating it.
+    """
+    return Task(
+        dataset=MemoryDataset(_collision_samples(), name="evalfloor_fixture_collision"),
+        scorer=exact(),
+    )
+
+
 @task(name="evalfloor_fixtures/exact_numeric")
 def exact_numeric() -> Task:
     """MUST NOT BE FLAGGED. exact() over numeric targets, no number in any input."""

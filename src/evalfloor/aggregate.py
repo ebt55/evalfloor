@@ -100,6 +100,12 @@ class TaskFloor:
     flagged: bool = False
     flagged_by: list[str] = field(default_factory=list)
     flagged_raw: bool = False
+    #: True when this flag rests **only** on the ``format_only`` / ``majority``
+    #: template collision: the sole flagging member is ``format_only`` and the
+    #: string it was scored on is the string ``majority`` was scored on. See
+    #: ``_rests_on_the_template_collision``.
+    collision: bool = False
+    collision_note: str = ""
     #: Graded arm only. When true the rates are over a capped sample rather than
     #: the dataset, so the report prints Wilson intervals and the flag rule uses
     #: the interval's lower bound, not the point estimate.
@@ -191,6 +197,48 @@ def _clears(score: MemberScore, floor: "TaskFloor") -> bool:
     return score.mean >= floor.majority
 
 
+#: The member that can collide with the ``majority`` baseline by construction.
+COLLISION_MEMBER = "format_only"
+COLLISION_BASELINE = "majority"
+
+
+def _rests_on_the_template_collision(floor: "TaskFloor") -> tuple[bool, str]:
+    """Does this flag rest only on ``format_only`` being ``majority``'s string?
+
+    ``format_only`` is *defined* as the task's answer template carrying a fixed
+    placeholder, ``ANSWER: A``. ``majority`` is the modal target written in that
+    same template. On a multiple-choice task whose modal target happens to be
+    ``A`` the two members are **the same completion**, they score identically,
+    and the ``>=`` in the flag rule fires on a tie between a member and itself.
+
+    Preregistration section 8.5 decides both halves of this: the tie rule stays
+    exactly as written -- weakening a rule after seeing data is worse than a
+    marked flag -- and a flag that rests only on the collision is **marked**,
+    never silently counted. This is the mark.
+    """
+    if floor.flagged_by != [COLLISION_MEMBER]:
+        return False, ""
+    member = floor.members.get(COLLISION_MEMBER)
+    baseline = floor.members.get(COLLISION_BASELINE)
+    if member is None or baseline is None:
+        return False, ""
+    completion = member.example_completion
+    if not completion or completion != baseline.example_completion:
+        return False, ""
+    return True, (
+        f"the only flagging member is `{COLLISION_MEMBER}`, and the completion it "
+        f"was scored on ({completion!r}) is the completion `{COLLISION_BASELINE}` "
+        f"was scored on. The task's modal target is {floor.majority_label!r}, which "
+        f"is the placeholder `{COLLISION_MEMBER}` carries, so the two members are "
+        "the same string and the tie is definitional rather than a finding."
+    )
+
+
+def collision_count(floors: Sequence["TaskFloor"]) -> int:
+    """Distinct flagged tasks whose flag rests only on the template collision."""
+    return len({f.task for f in floors if f.error is None and f.flagged and f.collision})
+
+
 def aggregate_run(run: TaskRun, full_dataset_size: int | None = None) -> list[TaskFloor]:
     """One TaskFloor per scorer the task declares."""
     if run.error:
@@ -268,6 +316,9 @@ def aggregate_run(run: TaskRun, full_dataset_size: int | None = None) -> list[Ta
                 s.member for s in content_free if _clears(s, floor)
             )
             floor.flagged = bool(floor.flagged_by)
+            floor.collision, floor.collision_note = _rests_on_the_template_collision(
+                floor
+            )
 
         # The raw arm is reported alongside, never used to flag, so that the
         # effect of the rendering rule on the headline is visible as a number.

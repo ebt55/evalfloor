@@ -420,3 +420,239 @@ def test_the_rendered_readme_carries_every_defect_row() -> None:
     text = render_readme(None, None)
     for number, defect, _invalidated in INSTRUMENT_DEFECT_ROWS:
         assert f"| {number} | {defect} |" in text
+
+
+# --------------------------------------------------------------------------
+# 8. The format_only / majority template collision (preregistration 8.5)
+# --------------------------------------------------------------------------
+
+
+def _collision_floor():
+    from fixtures import loose_eval  # noqa: F401  (registers the fixture tasks)
+
+    run = asyncio.run(
+        drive_task_async("evalfloor_fixtures/template_collision")
+    )
+    return aggregate_run(run)[0]
+
+
+def test_a_flag_that_rests_only_on_the_template_collision_is_marked() -> None:
+    """`format_only` is defined as the answer template with a placeholder,
+    `ANSWER: A`. `majority` is the modal target written in that same template.
+    Where the modal target IS `A` they are one string, they score identically,
+    and the `>=` in the flag rule fires on a tie between a member and itself.
+
+    Section 8.5 decides both halves: the tie rule stays exactly as written, and
+    a flag resting only on the collision is marked rather than silently counted.
+    """
+    floor = _collision_floor()
+
+    # The flag itself is unchanged. The rule is not weakened after seeing data.
+    assert floor.flagged is True
+    assert floor.flagged_by == ["format_only"]
+
+    assert floor.collision is True
+    assert floor.members["format_only"].example_completion == "ANSWER: A"
+    assert (
+        floor.members["format_only"].example_completion
+        == floor.members["majority"].example_completion
+    )
+    assert "format_only" in floor.collision_note
+    assert "ANSWER: A" in floor.collision_note
+
+
+def test_a_flag_with_another_member_behind_it_is_not_a_collision() -> None:
+    """The mark is for a flag that rests ONLY on the collision. The synthetic
+    negative control is flagged by `all_labels`, which is a finding."""
+    from fixtures import loose_eval  # noqa: F401
+
+    run = asyncio.run(drive_task_async("evalfloor_fixtures/loose_refusal"))
+    floor = aggregate_run(run)[0]
+    assert floor.flagged is True
+    assert "all_labels" in floor.flagged_by
+    assert floor.collision is False
+    assert floor.collision_note == ""
+
+
+def test_the_collision_is_counted_and_never_removed_from_the_rate() -> None:
+    from evalfloor.aggregate import collision_count, flag_rate
+
+    floor = _collision_floor()
+    assert flag_rate([floor]) == (1, 1), (
+        "a marked collision is still a flag; 8.5 marks it rather than dropping it"
+    )
+    assert collision_count([floor]) == 1
+
+
+def test_the_matrix_and_the_readme_carry_the_collision_mark() -> None:
+    from evalfloor.report import render_matrix, render_readme
+
+    floor = _collision_floor()
+    matrix = render_matrix([floor], [floor], digest="d", payload={})
+    assert "| collision |" in matrix
+    assert "**yes**" in matrix
+    assert "rest on the template collision" in matrix
+    assert floor.collision_note[:40] in matrix
+
+    inventory = [
+        {
+            "name": floor.task,
+            "reachable": True,
+            "exclusion_reason": "",
+            "exclusion_detail": "",
+            "scorer_expr": "exact()",
+            "scorer_class": "deterministic",
+        }
+    ]
+    readme = render_readme([floor], inventory, {})
+    assert "rest on the template collision" in readme
+
+
+# --------------------------------------------------------------------------
+# 9. The README reads both arms, whichever command triggered it
+# --------------------------------------------------------------------------
+
+
+def _payload(floors, **over):
+    payload = {
+        "schema": 2,
+        "pins": {},
+        "tasks": [f.task for f in floors],
+        "digest": "fixture",
+        "smoke": False,
+        "runs": [],
+        "floors": [f.to_dict() for f in floors],
+    }
+    payload.update(over)
+    return payload
+
+
+def _fixture_inventory(floors):
+    return [
+        {
+            "name": f.task,
+            "reachable": True,
+            "exclusion_reason": "",
+            "exclusion_detail": "",
+            "scorer_expr": "includes()",
+            "scorer_class": "deterministic",
+        }
+        for f in floors
+    ]
+
+
+def _deterministic_floors():
+    from fixtures import loose_eval  # noqa: F401
+
+    floors = []
+    for name in (
+        "evalfloor_fixtures/loose_refusal",   # flagged
+        "evalfloor_fixtures/tight_flags",     # clean
+    ):
+        floors.extend(aggregate_run(asyncio.run(drive_task_async(name))))
+    return floors
+
+
+def _graded_floors(tmp_path):
+    from evalfloor.graded import GRADERS, GradedCache, RefusalLog, grade_task_async
+
+    run, _ = asyncio.run(
+        grade_task_async(
+            "evalfloor_fixtures/loose_refusal", GRADERS["mock"], cap=4,
+            cache=GradedCache.load(tmp_path / "gc.jsonl"),
+            refusals=RefusalLog(tmp_path / "gr.jsonl"),
+            print_estimate=False,
+        )
+    )
+    return aggregate_run(run)
+
+
+def test_a_graded_regenerate_does_not_overwrite_the_deterministic_headline(
+    tmp_path,
+) -> None:
+    """`sweep --first-sweep --graded` wrote the deterministic headline into
+    README.md and then, seconds later, overwrote it with the graded arm's --
+    a headline whose denominator is 8 capped samples instead of 58 whole
+    datasets, under a sentence that says "of the whole collection". Nothing
+    failed; which arm the README quoted depended on command order.
+    """
+    from evalfloor.report import write_all, write_sweep
+
+    results = tmp_path / "results"
+    readme = tmp_path / "README.md"
+    rulings = tmp_path / "rulings.jsonl"
+
+    det_floors = _deterministic_floors()
+    det_payload = _payload(det_floors)
+    write_sweep(det_payload, results / "sweep.json")
+
+    graded_floors = _graded_floors(tmp_path)
+    graded_payload = _payload(
+        graded_floors, arm="graded", cap=4, grader={"model": "mockllm/model"}
+    )
+
+    # The graded arm regenerates SECOND, which is the order that used to lose
+    # the deterministic headline.
+    write_all(
+        graded_payload,
+        results / "graded",
+        rulings,
+        inventory=_fixture_inventory(det_floors),
+        readme_path=readme,
+    )
+    text = readme.read_text(encoding="utf-8")
+
+    assert "**1 of 2 tasks** swept" in text, (
+        "the headline must come from results/sweep.json, which has two tasks"
+    )
+    assert "**1 of 1 tasks** swept" not in text
+    # ...and the graded arm still appears, in its own section with its own
+    # denominator, never added to the one above.
+    assert "## The model-graded arm" in text
+    assert "never added" in text
+
+
+def test_a_deterministic_regenerate_picks_up_the_graded_section(tmp_path) -> None:
+    from evalfloor.report import write_all, write_sweep
+
+    results = tmp_path / "results"
+    readme = tmp_path / "README.md"
+    rulings = tmp_path / "rulings.jsonl"
+
+    graded_floors = _graded_floors(tmp_path)
+    write_sweep(
+        _payload(graded_floors, arm="graded", cap=4, grader={"model": "mockllm/model"}),
+        results / "graded" / "sweep.json",
+    )
+
+    det_floors = _deterministic_floors()
+    write_all(
+        _payload(det_floors),
+        results,
+        rulings,
+        inventory=_fixture_inventory(det_floors),
+        readme_path=readme,
+    )
+    text = readme.read_text(encoding="utf-8")
+    assert "**1 of 2 tasks** swept" in text
+    assert "## The model-graded arm" in text, (
+        "order must not decide whether the graded arm appears at all"
+    )
+
+
+def test_a_smoke_payload_never_reaches_the_readme_through_the_other_arm(
+    tmp_path,
+) -> None:
+    """results/smoke/ is exempt from the ordering gate because it is not a
+    result. Reading the other arm off disk must not let one in by the side
+    door."""
+    from evalfloor.report import readme_arms, write_sweep
+
+    results = tmp_path / "results"
+    det_floors = _deterministic_floors()
+    write_sweep(
+        _payload(det_floors, arm="graded", smoke=True), results / "graded" / "sweep.json"
+    )
+    arms = readme_arms(_payload(det_floors), det_floors, results, [])
+    assert arms["graded_payload"] is None
+    assert arms["graded_floors"] == []
