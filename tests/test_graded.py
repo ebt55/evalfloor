@@ -352,6 +352,27 @@ def test_the_serving_provider_is_recorded_not_inferred() -> None:
     assert routing_note(GRADERS["openai"], PROVIDER_UNREPORTED, 140, 140) == ""
 
 
+def test_a_failed_probe_falls_back_to_what_the_rows_recorded() -> None:
+    """A re-run from cache must not lose a provider the cache already holds."""
+    from evalfloor.graded import PROVIDER_UNREPORTED, attribute_provider
+
+    # The probe answered: it wins outright.
+    assert attribute_provider("DeepInfra", {"Parasail": 9}) == "DeepInfra"
+
+    # The probe 429'd, but 136 rows were read back from OpenRouter earlier.
+    assert (
+        attribute_provider(PROVIDER_UNREPORTED, {"DeepInfra": 136, "unreported": 4})
+        == "DeepInfra"
+    )
+
+    # Nothing to read anywhere: still reports nothing rather than the pin.
+    assert (
+        attribute_provider(PROVIDER_UNREPORTED, {"unreported": 140})
+        == PROVIDER_UNREPORTED
+    )
+    assert attribute_provider(PROVIDER_UNREPORTED, {}) == PROVIDER_UNREPORTED
+
+
 def test_the_routing_probe_retries_before_reporting_nothing(monkeypatch) -> None:
     """The pinned pool 429s intermittently; one attempt would lose the answer."""
     import evalfloor.graded as g
@@ -499,6 +520,51 @@ def test_an_ungradeable_response_is_not_a_zero(tmp_path) -> None:
     for score in floor.members.values():
         assert score.n_scored == 0
         assert math.isfinite(score.mean)
+
+
+def test_a_verdict_in_an_evals_own_vocabulary_is_never_silently_zeroed() -> None:
+    """Instrument defect 007. The generic converter zeroes what it cannot read."""
+    import pathlib
+
+    from inspect_ai.scorer import value_to_float
+
+    from evalfloor.graded import load_verdict_maps, map_verdict
+
+    # The root of the defect, asserted rather than described: Inspect's generic
+    # converter answers 0.0 for a string it does not know instead of declining.
+    assert value_to_float()("unacceptable") == 0.0
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    maps = load_verdict_maps(root / "verdict_maps.jsonl")
+    coconot = "inspect_evals/coconot"
+
+    # The direction that made it serious: coconot scores UNACCEPTABLE as 1.0,
+    # so zeroing it understates the floor -- the worst way for this audit to
+    # fail. The committed map reads the eval's own converter.
+    assert map_verdict("UNACCEPTABLE", coconot, maps) == (1.0, "UNACCEPTABLE")
+    assert map_verdict("ACCEPTABLE", coconot, maps)[0] == 0.0
+    assert map_verdict("NEITHER", coconot, maps)[0] == 0.0
+
+    # A verdict with no committed mapping is declined, not coerced to zero, and
+    # survives verbatim so the report can print its distribution.
+    score, raw = map_verdict("MOSTLY_FINE", coconot, maps)
+    assert score is None, "an unmapped verdict must never become a zero"
+    assert raw == "MOSTLY_FINE"
+
+    # A task with no map at all gets the same treatment, not a default of 0.0.
+    assert map_verdict("ACCEPTABLE", "inspect_evals/not_mapped", maps)[0] is None
+
+
+def test_every_verdict_map_quotes_the_source_line_it_came_from(tmp_path) -> None:
+    """A judgement call is only committed when it says where it was read."""
+    from evalfloor.graded import load_verdict_maps
+
+    unsourced = tmp_path / "verdict_maps.jsonl"
+    unsourced.write_text(
+        json.dumps({"task": "x", "map": {"yes": 1.0}}) + "\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="no `source`"):
+        load_verdict_maps(unsourced)
 
 
 def test_a_task_where_nothing_scored_is_not_in_the_denominator(tmp_path) -> None:

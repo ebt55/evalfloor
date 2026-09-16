@@ -64,9 +64,14 @@ Defects are logged, not quietly fixed. What the instrument got wrong is what tel
 
 | # | defect | what it would have invalidated |
 |---|---|---|
-| 001 | `choice()` tasks were not driven at all: the scorer reads marked choices, not completion text | every multiple-choice row; 16 of the first 20 tasks use `choice()` |
-| 002 | the flag rule fired on `0 >= 0` when nothing scored at all | turned harness failures into findings |
-| 003 | reference baselines could not parse on multiple-choice tasks | the chance line the whole flag rule rests on |
+| 001 | `choice()` tasks were not being driven at all | every multiple-choice row; 16 of the first 20 tasks use `choice()` |
+| 002 | the flag rule fired on `0 >= 0` | any task the harness could not drive, turning instrument failures into findings |
+| 003 | reference baselines could not parse on multiple-choice tasks | the chance line the whole flag rule rests on, on every multiple-choice task |
+| 004 | a shuffled dataset made every limited sweep non-reproducible | nothing published, because the manual check happened to compare two unlimited sweeps; it would have hit the first sampled arm |
+| 005 | rendering generalised, replacing the special case in 003 | no number, but it left two members written in the task's answer template and six written outside it for no reason a reader could check |
+| 006 | an ungradeable grader response was about to be reported as a zero | nothing published -- it was caught on a mock -- but it is the exact shape this project exists to find: a number that looks like a measured floor and is not one |
+| 007 | an eval's own grade vocabulary was being converted to zero | every graded number on the first real run, in the direction that understates the floor |
+| 008 | the provider pin was requested on a channel that was overwritten | the judge-disagreement figure and the pinned cost line published in 255eb3a, both measured under routing that was never recorded |
 
 ## Limitations
 
@@ -78,6 +83,8 @@ Defects are logged, not quietly fixed. What the instrument got wrong is what tel
 | The rendering rule is a choice | writing a member in the task's answer template changes what it scores. Both arms are published so the size of that effect is visible, but the headline depends on which arm is preregistered. |
 | Reachability is far below the collection size | most tasks need a container, a grader model, a gated dataset or an extra dependency. The denominator is published as prominently as the rate. |
 | `echo` on multimodal tasks | where inputs are images, echoing the input back is not well defined; such tasks are marked in the coverage file. |
+| One judge, and it can be wrong | the graded arm is scored by a single cheap model. Its id and the snapshot served are recorded in every row, and a second grader from a different family gives a measured disagreement rate -- which bounds the judge noise rather than removing it. |
+| Per-eval grade vocabularies | graded evals answer in their own words (ACCEPTABLE / NEITHER / COMPLIANCE and so on), and Inspect's generic converter silently returns 0.0 for any it does not know, which understates a floor. Mappings live in `verdict_maps.jsonl`, each quoting the eval source line; an unmapped verdict is excluded and reported, never zeroed. |
 
 ## Reproducing it
 

@@ -379,6 +379,27 @@ def probe_openrouter_routing(
     return PROVIDER_UNREPORTED
 
 
+def attribute_provider(probed: str, served_counts: dict[str, int]) -> str:
+    """Which provider to attribute a run to: the probe, else what the rows say.
+
+    The probe answers for the moment it runs; the rows answer for the calls that
+    were actually made. When the probe cannot be answered -- the pinned pool
+    429s intermittently -- but rows recorded a provider, the rows win. That is
+    reading a measurement already taken, not inferring one from the pin, and it
+    stops a re-run from cache from losing a fact the cache already holds.
+
+    Returns ``PROVIDER_UNREPORTED`` when neither has anything to say.
+    """
+    if probed != PROVIDER_UNREPORTED:
+        return probed
+    recorded = {
+        name: n for name, n in served_counts.items() if name != PROVIDER_UNREPORTED
+    }
+    if not recorded:
+        return PROVIDER_UNREPORTED
+    return max(recorded, key=lambda name: recorded[name])
+
+
 def routing_note(grader: Grader, served: str, n_served: int, n_calls: int) -> str:
     """The sentence the report prints, built from data rather than intent.
 
@@ -1665,6 +1686,7 @@ async def grade_task_async(
         for provider, n in a.served_counts.items():
             served_counts[provider] = served_counts.get(provider, 0) + n
     run.served_counts = served_counts
+    served_provider = attribute_provider(served_provider, served_counts)
     n_calls = sum(served_counts.values())
     n_served = served_counts.get(served_provider, 0)
     run.served_provider = served_provider

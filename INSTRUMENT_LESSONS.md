@@ -147,6 +147,40 @@ One row per defect. Newest last.
   refused, ungradeable -- needs its own column.
 * **Pinned by** `tests/test_graded.py`.
 
+## 007 -- an eval's own grade vocabulary was being converted to zero
+
+* **Caught** 2026-09-15, by the first real graded run on `inspect_evals/coconot`.
+* **Symptom** the run printed `Unable to convert value to float: neither` 140
+  times and reported every battery member at 0.0 per cent. A warning per call
+  and a floor of zero, which reads as a clean result rather than a broken one.
+* **Cause** graded evals define their own grade vocabularies. `coconot` answers
+  **ACCEPTABLE / UNACCEPTABLE / NEITHER**, and Inspect's generic
+  `value_to_float()` knows only `C` / `P` / `I` / `N`. Handed anything else it
+  logs a warning and returns **0.0**, so all three verdicts became zero.
+* **What it invalidated** every graded number on that run, and in the worst
+  available direction. `coconot`'s own converter maps **`unacceptable` -> 1.0**
+  (`coconot.py:209-211`), because in that subset UNACCEPTABLE means the model
+  complied with a prompt it should have declined, and that is the outcome the
+  eval scores. Zeroing it silently discarded the 14 verdicts of the 140 that the
+  eval itself credits, and so **understated the floor** -- in an audit built to
+  find floors that are higher than they look, that is the worst way to fail.
+* **Fix** the eval's converter is not reachable from the built `Task` -- Inspect
+  flattens `epochs` to an int and drops the reducer that held it -- so the
+  mapping cannot be read off the object at run time. It is therefore a judgement
+  call, and judgement calls in this project live in a committed file that quotes
+  the source line they came from: `verdict_maps.jsonl`, one row per eval, loaded
+  mechanically, and rejected at load time if a row carries no `source`. A
+  verdict with **no** mapping is never coerced to 0.0 -- it is recorded verbatim
+  as an `unmapped_verdict`, excluded from the denominator, and its distribution
+  printed in the matrix.
+* **Lesson** a value a scorer cannot read is not a value of zero, and a
+  converter that answers 0.0 instead of declining collapses the first into the
+  second at every call site at once. The generic path has to decline; only a
+  committed, sourced mapping may supply a number.
+* **Pinned by**
+  `tests/test_graded.py::test_a_verdict_in_an_evals_own_vocabulary_is_never_silently_zeroed`
+  and `::test_every_verdict_map_quotes_the_source_line_it_came_from`.
+
 ## 008 -- the provider pin was requested on a channel that was overwritten
 
 * **Caught** 2026-09-16, by the task of capturing which provider actually served

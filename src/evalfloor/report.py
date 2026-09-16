@@ -780,6 +780,62 @@ def render_rulings(applied: Sequence[AppliedRuling], unmatched: Sequence[Ruling]
 #: The literal placeholder shown until a real sweep fills it.
 README_PLACEHOLDER = "{flagged} of {reachable} tasks"
 
+#: The README's defect table: (number, heading, what it would have invalidated).
+#: The middle column is the entry's heading in ``INSTRUMENT_LESSONS.md``, copied
+#: verbatim, and a test fails if the two ever drift apart -- this table went
+#: three defects stale once already, which is the failure mode of any summary
+#: kept by hand next to the thing it summarises.
+INSTRUMENT_DEFECT_ROWS: tuple[tuple[str, str, str], ...] = (
+    (
+        "001",
+        "`choice()` tasks were not being driven at all",
+        "every multiple-choice row; 16 of the first 20 tasks use `choice()`",
+    ),
+    (
+        "002",
+        "the flag rule fired on `0 >= 0`",
+        "any task the harness could not drive, turning instrument failures into "
+        "findings",
+    ),
+    (
+        "003",
+        "reference baselines could not parse on multiple-choice tasks",
+        "the chance line the whole flag rule rests on, on every multiple-choice "
+        "task",
+    ),
+    (
+        "004",
+        "a shuffled dataset made every limited sweep non-reproducible",
+        "nothing published, because the manual check happened to compare two "
+        "unlimited sweeps; it would have hit the first sampled arm",
+    ),
+    (
+        "005",
+        "rendering generalised, replacing the special case in 003",
+        "no number, but it left two members written in the task's answer "
+        "template and six written outside it for no reason a reader could check",
+    ),
+    (
+        "006",
+        "an ungradeable grader response was about to be reported as a zero",
+        "nothing published -- it was caught on a mock -- but it is the exact "
+        "shape this project exists to find: a number that looks like a measured "
+        "floor and is not one",
+    ),
+    (
+        "007",
+        "an eval's own grade vocabulary was being converted to zero",
+        "every graded number on the first real run, in the direction that "
+        "understates the floor",
+    ),
+    (
+        "008",
+        "the provider pin was requested on a channel that was overwritten",
+        "the judge-disagreement figure and the pinned cost line published in "
+        "255eb3a, both measured under routing that was never recorded",
+    ),
+)
+
 
 def render_readme(
     floors: Sequence[TaskFloor] | None,
@@ -915,19 +971,8 @@ def render_readme(
     lines.append("")
     lines.append("| # | defect | what it would have invalidated |")
     lines.append("|---|---|---|")
-    lines.append(
-        "| 001 | `choice()` tasks were not driven at all: the scorer reads marked "
-        "choices, not completion text | every multiple-choice row; 16 of the first 20 "
-        "tasks use `choice()` |"
-    )
-    lines.append(
-        "| 002 | the flag rule fired on `0 >= 0` when nothing scored at all | turned "
-        "harness failures into findings |"
-    )
-    lines.append(
-        "| 003 | reference baselines could not parse on multiple-choice tasks | the "
-        "chance line the whole flag rule rests on |"
-    )
+    for number, defect, invalidated in INSTRUMENT_DEFECT_ROWS:
+        lines.append(f"| {number} | {defect} | {invalidated} |")
     lines.append("")
 
     lines.append("## Limitations")

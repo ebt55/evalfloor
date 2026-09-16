@@ -504,6 +504,17 @@ def run_graded(
             d["routing_note"] = run_b.routing_note
             d["served_provider"] = run_b.served_provider
             d["served_counts"] = run_b.served_counts
+            # The second grader's own spend, kept rather than discarded. It is
+            # what THIS run paid: a fully cached re-run reports 0 calls and $0,
+            # which is a fact about the run and not the arm's lifetime cost.
+            # Cells answered from cache were paid for by an earlier run, and
+            # that payment is recorded nowhere.
+            usage = run_b.measured_usage or {}
+            d["measured_usage"] = usage
+            print(
+                f"    measured this run: {usage.get('calls', 0)} provider calls, "
+                f"${usage.get('measured_usd', 0.0):.4f}"
+            )
             if run_b.routing_note:
                 print(f"    routing: {run_b.routing_note}")
             meta["disagreement"] = d

@@ -362,3 +362,61 @@ def test_rendering_finding_says_so_when_no_task_declares_a_template() -> None:
     text = rendering_finding([_floor_with_echo("inspect_evals/paws", 970, 8000)])
     assert text is not None
     assert "identical by construction" in text
+
+
+# --------------------------------------------------------------------------
+# The README's defect table against the lessons file
+#
+# The table is written by hand in report.py and the write-ups live in
+# INSTRUMENT_LESSONS.md. It silently went three defects stale once already, so
+# the agreement between the two is a control rather than a habit.
+# --------------------------------------------------------------------------
+
+
+def _lesson_headings() -> list[tuple[str, str]]:
+    """``(number, heading)`` for every entry in ``INSTRUMENT_LESSONS.md``."""
+    import pathlib
+    import re
+
+    root = pathlib.Path(__file__).resolve().parent.parent
+    text = (root / "INSTRUMENT_LESSONS.md").read_text(encoding="utf-8")
+    return re.findall(r"^## (\d{3}) -- (.+)$", text, flags=re.MULTILINE)
+
+
+def test_the_readme_defect_table_lists_every_logged_defect() -> None:
+    from evalfloor.report import INSTRUMENT_DEFECT_ROWS
+
+    logged = _lesson_headings()
+    assert logged, "INSTRUMENT_LESSONS.md has no numbered entries to check against"
+
+    in_file = [number for number, _heading in logged]
+    in_table = [number for number, _defect, _invalidated in INSTRUMENT_DEFECT_ROWS]
+
+    assert in_table == in_file, (
+        "the README defect table and INSTRUMENT_LESSONS.md disagree: "
+        f"table has {in_table}, file has {in_file}"
+    )
+    # Numbered newest last, with no hole: a gap means an entry was never written.
+    assert in_file == [f"{n:03d}" for n in range(1, len(in_file) + 1)], (
+        f"instrument defect numbers are not contiguous from 001: {in_file}"
+    )
+
+
+def test_the_readme_defect_table_quotes_the_lessons_headings_verbatim() -> None:
+    from evalfloor.report import INSTRUMENT_DEFECT_ROWS
+
+    headings = dict(_lesson_headings())
+    for number, defect, invalidated in INSTRUMENT_DEFECT_ROWS:
+        assert defect == headings[number], (
+            f"defect {number} is summarised differently in the README table "
+            f"({defect!r}) and in INSTRUMENT_LESSONS.md ({headings[number]!r})"
+        )
+        assert invalidated.strip(), f"defect {number} says nothing about its effect"
+
+
+def test_the_rendered_readme_carries_every_defect_row() -> None:
+    from evalfloor.report import INSTRUMENT_DEFECT_ROWS, render_readme
+
+    text = render_readme(None, None)
+    for number, defect, _invalidated in INSTRUMENT_DEFECT_ROWS:
+        assert f"| {number} | {defect} |" in text
