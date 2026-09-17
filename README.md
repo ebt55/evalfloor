@@ -6,9 +6,21 @@
 
 ## The number, and its denominator
 
-`{flagged} of {reachable} tasks` -- **no sweep has run yet.** This line is a placeholder that `evalfloor report` fills from `results/sweep.json`. No number is claimed here until it does.
+**5 of 20 tasks** swept have at least one content-free completion that scores at or above their own majority-class baseline. Of the whole collection, **58 of 237** declared tasks are reachable for this sweep at all.
 
-> **No preregistration is committed yet, so no sweep can produce a result.** `evalfloor sweep` refuses to write anywhere but `results/smoke/` until `PREREGISTRATION.md` is in git history, and it then stamps that commit hash here.
+Echoing the question back scores above zero on **3 of 20** tasks swept. On `paws`, **970 of 8,000** samples already contain a label somewhere in their own text, so the input scores against itself.
+
+On the raw arm -- members written plainly, ignoring each task's answer template -- it is 17 of 20. Of the 5 flagged, **4 rest on the template collision** -- the only flagging member is `format_only` and the string it was scored on is `majority`'s own string, so the flag is a tie between a member and itself. The rule is unchanged and the flags are marked; `results/floor_matrix.md` names them.
+
+Preregistration `PREREGISTRATION.md` was committed at `912345f8d5be` **before** this sweep ran. Anyone can check that independently: `git log --format='%H %ad' -- PREREGISTRATION.md`.
+
+## The model-graded arm
+
+**3 of 7** model-graded tasks have a content-free floor that clears their own majority baseline **at the Wilson 95% lower bound** -- a stricter rule than the deterministic arm's, because these rates are over a capped sample of 100 items per task per member rather than a whole dataset. This number is **never added** to the one above: the two arms have different denominators, different rules and different costs. Full tables in [`results/graded/floor_matrix.md`](results/graded/floor_matrix.md).
+
+Judged by `openai/gpt-5.6-luna`. 
+
+Judge-disagreement control on `inspect_evals/coconot`, against `openrouter/z-ai/glm-5.3-flash`: **82 of 856** comparable cells flip on a change of judge = 9.6% [7.8%, 11.7%]. That bounds the judge noise in every graded figure above; it does not remove it.
 
 ## What this is
 
