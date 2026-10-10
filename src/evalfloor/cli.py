@@ -20,14 +20,22 @@ import asyncio
 import datetime as _dt
 import json
 import pathlib
+import subprocess
 import sys
 from typing import Any, Sequence
 
 from . import installed_pins
-from .aggregate import aggregate_run, collision_count, flag_rate, sweep_digest
-from .battery import BATTERY, battery_fingerprint
+from .aggregate import (
+    aggregate_run,
+    collision_count,
+    flag_rate,
+    sweep_digest,
+    task_digests,
+)
+from .battery import BATTERY, SHUFFLE_SEED, battery_fingerprint, run_fingerprint
 from .drive import TaskRun, drive_task_async
 from .report import (
+    ADDENDUM_HEADING,
     floors_from_payload,
     negative_result_threshold,
     raw_arm_clause,
@@ -43,8 +51,65 @@ SMOKE_TASKS: tuple[str, ...] = (
     "inspect_evals/sec_qa_v2",  # choice
     "inspect_evals/gsm8k",  # match(numeric=True)
     "inspect_evals/boolq",  # pattern
-    "inspect_evals/paws",  # includes
+    "inspect_evals/paws",  # includes below 0.21; pattern from 0.21 (#2334)
     "inspect_evals/drop",  # f1
+)
+
+#: The close-out list: the 45 countable tasks of the 58 reachable on 0.20.0,
+#: fixed by name in PREREGISTRATION.md section 11 before any 0.24.0 result. The
+#: other 13 each carry a ``not_counted`` row in ``rulings.jsonl``, and any task
+#: given such a row later is dropped by ``closeout_task_list`` -- so a ruling
+#: against ``lab_bench`` is data, not an edit here. No task is ever added.
+CLOSEOUT_TASKS: tuple[str, ...] = (
+    # The preregistered twenty (section 6), in its order.
+    "inspect_evals/vstar_bench_spatial_relationship_reasoning",
+    "inspect_evals/sec_qa_v2",
+    "inspect_evals/sec_qa_v2_5_shot",
+    "inspect_evals/vstar_bench_attribute_recognition",
+    "inspect_evals/musr",
+    "inspect_evals/pre_flight",
+    "inspect_evals/onet_m6",
+    "inspect_evals/wmdp_chem",
+    "inspect_evals/pubmedqa",
+    "inspect_evals/truthfulqa",
+    "inspect_evals/arc_challenge",
+    "inspect_evals/commonsense_qa",
+    "inspect_evals/winogrande",
+    "inspect_evals/wmdp_bio",
+    "inspect_evals/gsm8k",
+    "inspect_evals/arc_easy",
+    "inspect_evals/boolq",
+    "inspect_evals/race_h",
+    "inspect_evals/paws",
+    "inspect_evals/drop",
+    # choice(), 8
+    "inspect_evals/bbq",
+    "inspect_evals/hellaswag",
+    "inspect_evals/mmlu_0_shot",
+    "inspect_evals/mmlu_5_shot",
+    "inspect_evals/mmlu_pro",
+    "inspect_evals/sec_qa_v1",
+    "inspect_evals/sec_qa_v1_5_shot",
+    "inspect_evals/wmdp_cyber",
+    # other scorers, 9
+    "inspect_evals/aime2024",
+    "inspect_evals/aime2025",
+    "inspect_evals/aime2026",
+    "inspect_evals/squad",
+    "inspect_evals/bbeh",
+    "inspect_evals/bbeh_mini",
+    "inspect_evals/bbh",
+    "inspect_evals/chembench",
+    "inspect_evals/macbench",
+    # precision_choice(), 8: counted on the eval's own accuracy(), NOANSWER = 0
+    "inspect_evals/lab_bench_cloning_scenarios",
+    "inspect_evals/lab_bench_dbqa",
+    "inspect_evals/lab_bench_figqa",
+    "inspect_evals/lab_bench_litqa",
+    "inspect_evals/lab_bench_protocolqa",
+    "inspect_evals/lab_bench_seqqa",
+    "inspect_evals/lab_bench_suppqa",
+    "inspect_evals/lab_bench_tableqa",
 )
 
 #: The model-graded arm's first sweep, fixed by ``PREREGISTRATION.md`` section 8A.
@@ -132,7 +197,35 @@ def cmd_inventory(args: argparse.Namespace) -> int:
 # --------------------------------------------------------------------------
 
 
+def closeout_task_list(rules: Sequence[Any]) -> list[str]:
+    """``CLOSEOUT_TASKS`` minus every task a ``not_counted`` row names."""
+    from .rulings import not_counted
+
+    dropped = {r.task for r in not_counted(rules)}
+    return [name for name in CLOSEOUT_TASKS if name not in dropped]
+
+
 def _resolve_task_list(args: argparse.Namespace) -> list[str]:
+    if getattr(args, "closeout", False):
+        from .rulings import load_rulings
+
+        # The list is fixed by section 11. Nothing narrows or caps it here.
+        if args.tasks or args.first_sweep or getattr(args, "smoke_set", False):
+            raise SystemExit(
+                "--closeout fixes its own task list; it takes no --tasks, "
+                "--first-sweep or --smoke-set"
+            )
+        if args.limit is not None:
+            raise SystemExit(
+                "--closeout sweeps whole datasets; it refuses --limit, because a "
+                "capped run is not the run section 11 describes"
+            )
+        if getattr(args, "graded", False):
+            raise SystemExit(
+                "--closeout does not run the graded arm: it stays on 0.20.0 and is "
+                "not re-run (PREREGISTRATION.md section 11.3)"
+            )
+        return closeout_task_list(load_rulings(pathlib.Path(args.rulings)))
     if args.tasks:
         names: list[str] = []
         for item in args.tasks:
@@ -152,7 +245,7 @@ def _resolve_task_list(args: argparse.Namespace) -> list[str]:
         else:
             infos = discover(probe=True, cache_path=pathlib.Path(args.out) / "hf_probe_cache.json")
         return [t.name for t in first_sweep_tasks(infos)]
-    raise SystemExit("sweep needs --tasks, --first-sweep or --smoke-set")
+    raise SystemExit("sweep needs --tasks, --first-sweep, --smoke-set or --closeout")
 
 
 # --------------------------------------------------------------------------
@@ -241,6 +334,88 @@ def check_ordering_gate(out: pathlib.Path, repo: pathlib.Path | None = None) -> 
     )
 
 
+# --------------------------------------------------------------------------
+# The close-out gate
+#
+# Section 11 fixes the close-out list, the pin and the seed after the 17 Sep
+# results existed and before any 0.24.0 result. A commit date is set by its
+# author, so "before" has to be checked against something the author cannot
+# set: the addendum has to be on origin, where the push time is the server's.
+# `sweep --closeout` therefore refuses unless all three hold, and stamps the
+# addendum's commit so every generated file can print it.
+# --------------------------------------------------------------------------
+
+#: Where "on origin" is checked, locally. A stale fetch can only make the gate
+#: refuse, never pass something that is not there.
+ADDENDUM_REMOTE_REF = "origin/master"
+
+
+def _git(repo: pathlib.Path, *args: str) -> subprocess.CompletedProcess[str] | None:
+    try:
+        return subprocess.run(
+            ["git", *args],
+            cwd=str(repo),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+
+
+def addendum_commit(
+    repo: pathlib.Path | None = None,
+    heading: str = ADDENDUM_HEADING,
+    filename: str = PREREGISTRATION_FILENAME,
+) -> str | None:
+    """The commit that added section 11's heading, or None.
+
+    ``git log -S`` lists the commits that changed how often the string occurs;
+    the earliest is the one that introduced it.
+    """
+    proc = _git(
+        repo or pathlib.Path.cwd(),
+        "log", f"-S{heading}", "--reverse", "--format=%H", "--", filename,
+    )
+    if proc is None or proc.returncode != 0:
+        return None
+    hashes = [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return hashes[0] if hashes else None
+
+
+def check_addendum_gate(
+    repo: pathlib.Path | None = None,
+    heading: str = ADDENDUM_HEADING,
+    filename: str = PREREGISTRATION_FILENAME,
+    remote_ref: str = ADDENDUM_REMOTE_REF,
+) -> str:
+    """Return the addendum commit, or raise SystemExit naming what is missing."""
+    repo = repo or pathlib.Path.cwd()
+
+    def refuse(why: str) -> SystemExit:
+        return SystemExit(
+            f"refusing to run the close-out sweep.\n\n  {why}\n\n"
+            f"Section 11 has to be committed, unmodified in the working tree, and on\n"
+            f"{remote_ref} before any close-out result exists, so that the push time\n"
+            f"on the server dates it. Commit it, `git push`, then re-run this command."
+        )
+
+    shown = _git(repo, "show", f"HEAD:{filename}")
+    if shown is None or shown.returncode != 0 or heading not in shown.stdout:
+        raise refuse(f"{filename} at HEAD has no {heading!r}.")
+    diff = _git(repo, "diff", "--quiet", "HEAD", "--", filename)
+    if diff is None or diff.returncode != 0:
+        raise refuse(f"{filename} has uncommitted changes.")
+    commit = addendum_commit(repo, heading, filename)
+    if not commit:
+        raise refuse(f"no commit in history adds {heading!r}.")
+    on_origin = _git(repo, "merge-base", "--is-ancestor", commit, remote_ref)
+    if on_origin is None or on_origin.returncode != 0:
+        raise refuse(f"the addendum commit {commit[:12]} is not on {remote_ref}.")
+    return commit
+
+
 def _sweep(tasks: Sequence[str], limit: int | None) -> tuple[list[TaskRun], list[Any]]:
     runs: list[TaskRun] = []
     floors: list[Any] = []
@@ -270,12 +445,18 @@ def cmd_sweep(args: argparse.Namespace) -> int:
     # and cannot leave a half-written result behind.
     prereg_commit = check_ordering_gate(out)
     smoke = is_smoke_output(out)
+    closeout = bool(getattr(args, "closeout", False))
+    # Section 11 has to be on origin before a close-out result exists. A smoke
+    # run is not a result, and is exempt here exactly as from the gate above.
+    addendum = check_addendum_gate() if closeout and not smoke else None
 
     tasks = _resolve_task_list(args)
     if smoke:
         print(f"SMOKE run into {out}/ -- exempt from the ordering gate, not a result")
     else:
         print(f"preregistration committed at {prereg_commit[:12]}; proceeding")
+    if addendum:
+        print(f"close-out addendum committed at {addendum[:12]} and on {ADDENDUM_REMOTE_REF}")
     print(f"sweeping {len(tasks)} tasks into {out}/")
     runs, floors = _sweep(tasks, args.limit)
 
@@ -286,9 +467,18 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         "arm": "deterministic",
         "pins": installed_pins(),
         "battery_fingerprint": battery_fingerprint(),
+        # The battery plus the load's shuffle seed. Kept apart from
+        # battery_fingerprint, which every graded cache key hashes.
+        "run_fingerprint": run_fingerprint(),
+        "shuffle_seed": SHUFFLE_SEED,
         "limit": args.limit,
         "tasks": list(tasks),
+        "closeout": closeout,
         "digest": sweep_digest(runs),
+        # One per task, at the top level: `report --repeat` compares these to
+        # name the tasks two runs disagree on. A key on each floor would not
+        # load back, since TaskFloor(**row) takes no unknown field.
+        "task_digests": task_digests(runs),
         "smoke": smoke,
         "preregistration_path": PREREGISTRATION_FILENAME,
         "preregistration_commit": prereg_commit,
@@ -298,6 +488,10 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         "runs": [r.to_dict() for r in runs],
         "floors": [f.to_dict() for f in floors],
     }
+    if addendum:
+        # Present only on a gated close-out run; its presence is what tells the
+        # report that section 11 was on origin first.
+        payload["addendum_commit"] = addendum
     sweep_path = write_sweep(payload, out / "sweep.json")
     print(f"\nwrote {sweep_path}")
     print(f"digest {payload['digest'][:16]}")
@@ -313,8 +507,10 @@ def cmd_sweep(args: argparse.Namespace) -> int:
         )
 
     if not args.no_report:
+        # A close-out sweep writes no README. The close-out README is written
+        # only by `report --out results --repeat ...`, once both runs exist.
         written = _regenerate(
-            out, pathlib.Path(args.rulings), payload, readme=not smoke
+            out, pathlib.Path(args.rulings), payload, readme=not smoke and not closeout
         )
         for path in written:
             print(f"wrote {path}")
@@ -369,6 +565,7 @@ def _regenerate(
     rulings: pathlib.Path,
     payload: dict[str, Any],
     readme: bool = True,
+    repeat: dict[str, Any] | None = None,
 ) -> list[pathlib.Path]:
     return write_all(
         payload,
@@ -377,6 +574,7 @@ def _regenerate(
         inventory=_load_inventory(out),
         # A smoke run never rewrites the README. Its numbers are not results.
         readme_path=pathlib.Path("README.md") if readme else None,
+        repeat=repeat,
     )
 
 
@@ -772,12 +970,41 @@ def cmd_report(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_UNRUNNABLE
+    from .report import apply_repeat, repeat_mismatch
     from .rulings import apply_rulings, load_rulings
 
     payload = read_sweep(sweep_path)
+    repeat = None
+    if getattr(args, "repeat", None):
+        repeat_path = pathlib.Path(args.repeat)
+        if not repeat_path.exists():
+            print(f"no second payload at {repeat_path}", file=sys.stderr)
+            return EXIT_UNRUNNABLE
+        repeat = read_sweep(repeat_path)
+        problems = repeat_mismatch(payload, repeat)
+        if problems:
+            # Refused before anything is written: a second run under other pins,
+            # another fingerprint or another list is not a determinism check.
+            print(f"refusing --repeat {repeat_path}:", file=sys.stderr)
+            for problem in problems:
+                print(f"  {problem}", file=sys.stderr)
+            return EXIT_UNRUNNABLE
     readme = not payload.get("smoke", False) and not args.no_readme
-    written = _regenerate(out, pathlib.Path(args.rulings), payload, readme=readme)
+    written = _regenerate(
+        out, pathlib.Path(args.rulings), payload, readme=readme, repeat=repeat
+    )
     floors = floors_from_payload(payload)
+    if repeat is not None:
+        moved = apply_repeat(floors, payload, repeat)
+        if moved:
+            print(f"not run, non-deterministic across the two runs: {', '.join(moved)}")
+        else:
+            print(f"two runs, every task digest identical ({len(payload['task_digests'])} tasks)")
+    if readme and pathlib.Path("README.md") not in written:
+        print(
+            "README.md not rewritten: once section 11 is stamped, only "
+            "`report --out results --repeat <second sweep.json>` writes it"
+        )
     after, _, _ = apply_rulings(floors, load_rulings(pathlib.Path(args.rulings)))
     flagged, denom = flag_rate(floors)
     flagged_after, _ = flag_rate(after)
@@ -965,6 +1192,15 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="use the five-task smoke set (one per scorer family)",
     )
+    p_sweep.add_argument(
+        "--closeout",
+        action="store_true",
+        help=(
+            f"sweep the {len(CLOSEOUT_TASKS)} close-out tasks, minus any with a "
+            "not_counted ruling; outside results/smoke/ it refuses unless "
+            "PREREGISTRATION.md section 11 is committed and on origin. No --limit."
+        ),
+    )
     p_sweep.add_argument("--out", default=str(DEFAULT_RESULTS))
     p_sweep.add_argument("--rulings", default=str(DEFAULT_RULINGS))
     p_sweep.add_argument("--limit", type=int, default=None, help="cap samples per task")
@@ -988,6 +1224,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("--rulings", default=str(DEFAULT_RULINGS))
     p_report.add_argument(
         "--no-readme", action="store_true", help="leave README.md alone"
+    )
+    p_report.add_argument(
+        "--repeat",
+        default=None,
+        help=(
+            "a second run's sweep.json, from a separate process; tasks the two "
+            "runs disagree on are reported as not run: non-deterministic. Refused "
+            "if its pins, run fingerprint or task list differ"
+        ),
     )
     p_report.set_defaults(func=cmd_report)
 

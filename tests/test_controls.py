@@ -200,6 +200,119 @@ def test_a_malformed_ruling_is_an_error_not_a_warning(tmp_path) -> None:
         load_rulings(path)
 
 
+def _ruling_row(**over) -> str:
+    import json
+
+    row = {
+        "task": "inspect_evals/tau2_airline",
+        "action": "not_counted",
+        "treatment": "needs solver state",
+        "reason": "fixture",
+        "source": "tests/test_controls.py",
+        "date": "2026-10-10",
+        "author": "ebt55",
+    }
+    row.update(over)
+    return json.dumps({k: v for k, v in row.items() if v is not None}) + "\n"
+
+
+def test_a_not_counted_row_must_name_its_treatment(tmp_path) -> None:
+    from evalfloor.rulings import RulingError, load_rulings
+
+    path = tmp_path / "rulings.jsonl"
+    path.write_text(_ruling_row(), encoding="utf-8")
+    (row,) = load_rulings(path)
+    assert (row.action, row.treatment) == ("not_counted", "needs solver state")
+
+    for bad in (
+        _ruling_row(treatment=None),                    # no treatment
+        _ruling_row(treatment="  "),                    # an empty one
+        _ruling_row(scorer="inspect_ai/choice"),        # half a task
+        _ruling_row(action="unflag"),                   # treatment on another action
+    ):
+        path.write_text(bad, encoding="utf-8")
+        with pytest.raises(RulingError):
+            load_rulings(path)
+
+
+def test_not_counted_rows_are_listed_not_swept(tmp_path) -> None:
+    """A not_counted task is never swept, so matching no floor is its normal
+    state: it is listed with its treatment, never as "matched no task". Listed
+    on the deterministic arm only; the graded arm's files do not change."""
+    import json
+    import pathlib
+
+    from evalfloor.aggregate import flag_rate
+    from evalfloor.cli import CLOSEOUT_TASKS, closeout_task_list
+    from evalfloor.report import read_sweep, write_all
+    from evalfloor.rulings import apply_rulings, load_rulings
+
+    path = tmp_path / "rulings.jsonl"
+    path.write_text(
+        _ruling_row()
+        + _ruling_row(task="evalfloor/control_loose", treatment="needs a judge"),
+        encoding="utf-8",
+    )
+    rules = load_rulings(path)
+
+    # The list: a not_counted task never reaches the sweep at all.
+    assert "inspect_evals/tau2_airline" not in CLOSEOUT_TASKS
+    assert closeout_task_list(rules) == list(CLOSEOUT_TASKS)
+    lab = tmp_path / "lab.jsonl"
+    lab.write_text(_ruling_row(task="inspect_evals/lab_bench_dbqa"), encoding="utf-8")
+    dropped = load_rulings(lab)
+    assert "inspect_evals/lab_bench_dbqa" not in closeout_task_list(dropped)
+    assert len(closeout_task_list(dropped)) == len(CLOSEOUT_TASKS) - 1
+
+    # Matching nothing is not "unmatched"; matching a floor takes it out of
+    # every rate, with the treatment as the reason.
+    floors = aggregate_run(_run(controls.control_loose(), "evalfloor/control_loose"))
+    assert flag_rate(floors) == (1, 1)
+    after, applied, unmatched = apply_rulings(floors, rules)
+    assert unmatched == []
+    assert after[0].error == "not counted: needs a judge"
+    assert flag_rate(after) == (0, 0)
+    assert [a.effect for a in applied] == [
+        "evalfloor/control_loose: not counted (needs a judge)"
+    ]
+
+    # Rendered: the deterministic arm lists the treatments...
+    inventory = [
+        {
+            "name": "inspect_evals/tau2_airline", "reachable": True,
+            "exclusion_reason": "", "exclusion_detail": "",
+            "scorer_expr": "airline_scorer()", "scorer_class": "deterministic_custom",
+        }
+    ]
+    payload = {"arm": "deterministic", "pins": {}, "tasks": [], "floors": [], "runs": []}
+    write_all(payload, tmp_path / "det", path, inventory=inventory)
+    coverage = (tmp_path / "det" / "coverage.md").read_text(encoding="utf-8")
+    applied_md = (tmp_path / "det" / "rulings_applied.md").read_text(encoding="utf-8")
+    assert "| `inspect_evals/tau2_airline` | `airline_scorer()` | " in coverage
+    assert "| not counted | `not_counted` | needs solver state |" in coverage
+    assert "| needs solver state | 1 | `tau2_airline` |" in coverage
+    assert "## Not counted: listed, never swept" in applied_md
+    assert "matched no task" not in applied_md
+
+    # ...and the graded arm's files are byte-identical with or without the rows.
+    root = pathlib.Path(__file__).resolve().parent.parent
+    graded = read_sweep(root / "results" / "graded" / "sweep.json")
+    committed_rules = (root / "rulings.jsonl").read_text(encoding="utf-8")
+    plain = tmp_path / "plain.jsonl"
+    plain.write_text(committed_rules, encoding="utf-8")
+    plus = tmp_path / "plus.jsonl"
+    plus.write_text(committed_rules + path.read_text(encoding="utf-8"), encoding="utf-8")
+    full_inventory = json.loads(
+        (root / "results" / "task_inventory.json").read_text(encoding="utf-8")
+    )
+    write_all(graded, tmp_path / "g_plain", plain, inventory=full_inventory)
+    write_all(graded, tmp_path / "g_plus", plus, inventory=full_inventory)
+    for name in ("floor_matrix.md", "coverage.md", "rulings_applied.md"):
+        a = (tmp_path / "g_plain" / name).read_text(encoding="utf-8")
+        b = (tmp_path / "g_plus" / name).read_text(encoding="utf-8")
+        assert a == b, f"graded {name} changed when not_counted rows were added"
+
+
 # --------------------------------------------------------------------------
 # 6. Interval arithmetic
 # --------------------------------------------------------------------------

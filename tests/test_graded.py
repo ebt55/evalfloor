@@ -1636,3 +1636,103 @@ def test_readme_says_the_fix_merged_and_dates_the_latest_release() -> None:
         assert len(re.findall(r"latest release", text)) == len(
             re.findall(r"as of \d{4}-\d{2}-\d{2} the latest release", text)
         )
+
+
+# --------------------------------------------------------------------------
+# Polarity, at render time
+#
+# A flag on a task whose high score is the bad outcome is a content-free answer
+# scoring as compliance or as harm, never credit. Which way each score points is
+# read from verdict_maps.jsonl, where every polarity quotes its source line.
+# --------------------------------------------------------------------------
+
+ALL_THREE_INVERTED = "All 3 flags are on tasks whose high score is the bad outcome."
+
+
+def _per_task_rows(text: str) -> dict[str, list[str]]:
+    table = text.split("### Per task")[1].split("\n\n", 2)[1]
+    rows = {}
+    for line in table.splitlines()[2:]:
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        rows[cells[0].strip("`")] = cells
+    return rows
+
+
+def test_the_graded_table_carries_each_tasks_polarity() -> None:
+    from evalfloor.graded import load_verdict_maps, polarity_for
+    from evalfloor.report import render_graded_section
+
+    payload, _, after = _committed("graded")
+    maps = load_verdict_maps(_repo_root() / "verdict_maps.jsonl")
+    text = render_graded_section(after, payload)
+    assert "| refusals | flagged | polarity |" in text
+    rows = _per_task_rows(text)
+    assert len(rows) == 8
+    for task, cells in rows.items():
+        assert cells[-1] == polarity_for(task, maps), task
+    # The three flags, each on a task where the high score is the bad outcome.
+    flagged = {t for t, cells in rows.items() if cells[-2] not in ("no", "not measured")}
+    assert flagged == {
+        "inspect_evals/coconot", "inspect_evals/fortress_benign", "inspect_evals/sosbench",
+    }
+    assert {rows[t][-1] for t in flagged} == {"inverted"}
+
+
+def test_a_flagged_task_with_no_polarity_prints_polarity_not_recorded() -> None:
+    """None is not a default of credit, and it does not stay silent either."""
+    from evalfloor.report import (
+        POLARITY_NOT_RECORDED,
+        polarity_sentence,
+        render_graded_section,
+    )
+
+    payload, _, after = _committed("graded")
+    text = render_graded_section(after, payload, polarity={})
+    rows = _per_task_rows(text)
+    assert rows["inspect_evals/coconot"][-1] == POLARITY_NOT_RECORDED
+    assert polarity_sentence(after, {}) is None
+
+
+def test_the_polarity_line_is_printed_only_when_it_is_true() -> None:
+    import copy
+
+    from evalfloor.report import (
+        graded_polarities,
+        polarity_sentence,
+        render_matrix,
+        render_readme_graded,
+    )
+
+    payload, before, after = _committed("graded")
+    polarity = graded_polarities(after)
+    assert polarity_sentence(after, polarity) == ALL_THREE_INVERTED
+    matrix = render_matrix(before, after, payload["digest"], payload)
+    assert f"{GRADED_VERDICT_3_OF_7} {ALL_THREE_INVERTED}" in matrix
+    readme = "\n".join(render_readme_graded(after, payload))
+    assert f"{GRADED_VERDICT_3_OF_7} {ALL_THREE_INVERTED}" in readme
+
+    # One flag on a credit task, and the sentence is not said at all.
+    mixed = dict(polarity, **{"inspect_evals/sosbench": "credit"})
+    assert polarity_sentence(after, mixed) is None
+    # A flag on a task with no recorded polarity is not assumed either way.
+    unknown = {t: p for t, p in polarity.items() if t != "inspect_evals/coconot"}
+    assert polarity_sentence(after, unknown) is None
+
+    # One flag left: the sentence counts what is there.
+    one = copy.deepcopy(after)
+    for f in one:
+        if f.task != "inspect_evals/sosbench":
+            f.flagged, f.flagged_by = False, []
+    assert polarity_sentence(one, polarity) == (
+        "The one flag is on a task whose high score is the bad outcome."
+    )
+    # No flag, nothing to say.
+    for f in one:
+        f.flagged, f.flagged_by = False, []
+    assert polarity_sentence(one, polarity) is None
+
+    # The deterministic arm never reads polarity.
+    det_payload, det_before, det_after = _committed("deterministic")
+    det = render_matrix(det_before, det_after, det_payload["digest"], det_payload)
+    assert "polarity" not in det
+    assert "bad outcome" not in det

@@ -16,12 +16,19 @@ Row schema, one JSON object per line::
       "task": "inspect_evals/example",     # required; registry task name
       "scorer": "inspect_ai/includes",     # optional; all scorers if omitted
       "member": "all_labels",              # optional; all members if omitted
-      "action": "unflag",                  # unflag | drop_member | note
+      "action": "unflag",                  # unflag | drop_member | note | not_counted
+      "treatment": "needs a judge",        # required for not_counted, only there
       "reason": "target is a CTF flag ...",# required; why
       "source": "src/inspect_evals/x.py:41: scorer=includes()",  # required
       "date": "2026-09-15",
       "author": "ebt55"
     }
+
+``not_counted`` is the one action that acts before a sweep rather than after
+it: the task is left off the close-out list (``cli.closeout_task_list``), so it
+is never swept and the flag rate needs no adjustment. Its ``treatment`` is the
+reason class the coverage file groups it under, and its ``reason`` and
+``source`` say why that class applies to this task.
 """
 
 from __future__ import annotations
@@ -33,7 +40,10 @@ from typing import Any, Iterable, Sequence
 
 from .aggregate import TaskFloor
 
-VALID_ACTIONS = frozenset({"unflag", "drop_member", "note"})
+VALID_ACTIONS = frozenset({"unflag", "drop_member", "note", "not_counted"})
+
+#: The action whose rows name tasks that are listed, never swept.
+NOT_COUNTED = "not_counted"
 
 
 @dataclass(frozen=True)
@@ -46,6 +56,7 @@ class Ruling:
     member: str | None = None
     date: str = ""
     author: str = ""
+    treatment: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -84,6 +95,23 @@ def load_rulings(path: pathlib.Path) -> list[Ruling]:
                 f"{path}:{lineno}: action {row['action']!r} not one of "
                 + ", ".join(sorted(VALID_ACTIONS))
             )
+        treatment = row.get("treatment")
+        if row["action"] == NOT_COUNTED:
+            if not isinstance(treatment, str) or not treatment.strip():
+                raise RulingError(
+                    f"{path}:{lineno}: a {NOT_COUNTED} row needs a non-empty "
+                    "'treatment'"
+                )
+            if row.get("scorer") or row.get("member"):
+                # A task is listed or swept whole; there is no half-counted task.
+                raise RulingError(
+                    f"{path}:{lineno}: a {NOT_COUNTED} row names a whole task, "
+                    "not a scorer or a member"
+                )
+        elif treatment is not None:
+            raise RulingError(
+                f"{path}:{lineno}: 'treatment' belongs only to a {NOT_COUNTED} row"
+            )
         rulings.append(
             Ruling(
                 task=row["task"],
@@ -94,9 +122,15 @@ def load_rulings(path: pathlib.Path) -> list[Ruling]:
                 member=row.get("member"),
                 date=row.get("date", ""),
                 author=row.get("author", ""),
+                treatment=treatment,
             )
         )
     return rulings
+
+
+def not_counted(rulings: Iterable[Ruling]) -> list[Ruling]:
+    """The ``not_counted`` rows, in file order."""
+    return [r for r in rulings if r.action == NOT_COUNTED]
 
 
 @dataclass
@@ -121,10 +155,22 @@ def apply_rulings(
     for ruling in rulings:
         targets = [f for f in after if ruling.matches(f)]
         if not targets:
-            unmatched.append(ruling)
+            # A not_counted task is never swept, so matching nothing is what it
+            # is for. It is listed with its treatment, never as "matched no task".
+            if ruling.action != NOT_COUNTED:
+                unmatched.append(ruling)
             continue
         for floor in targets:
-            if ruling.action == "note":
+            if ruling.action == NOT_COUNTED:
+                # Swept anyway (a --tasks run, say): the floor leaves every
+                # rate the way an errored task does, and says why.
+                floor.error = f"not counted: {ruling.treatment}"
+                floor.ruling = NOT_COUNTED
+                floor.ruling_reason = ruling.reason
+                applied.append(
+                    AppliedRuling(ruling, f"{floor.task}: not counted ({ruling.treatment})")
+                )
+            elif ruling.action == "note":
                 floor.ruling = "note"
                 floor.ruling_reason = ruling.reason
                 applied.append(AppliedRuling(ruling, f"{floor.task}: note recorded"))

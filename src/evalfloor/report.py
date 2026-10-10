@@ -52,6 +52,18 @@ NEGATIVE_RESULT_THRESHOLDS: dict[str, int] = {
     "graded": GRADED_NEGATIVE_RESULT_THRESHOLD,
 }
 
+#: The heading of PREREGISTRATION.md section 11. ``git log -S`` on this string
+#: finds the commit that added it, which the close-out sweep stamps and the
+#: generated files print beside the original preregistration commit.
+ADDENDUM_HEADING = "## 11. Close-out addendum"
+
+#: The error a task gets when its two runs disagree (section 11.7). Set before
+#: rulings, so the task leaves every rate, before and after, and says why.
+NOT_RUN_NONDETERMINISTIC = "not run: non-deterministic"
+
+#: What two runs must share before their per-task digests are comparable.
+REPEAT_MUST_MATCH = ("pins", "run_fingerprint", "tasks")
+
 #: What a cell prints for an arm that was never scored. Never ``0.0%``.
 NOT_RUN = "not run"
 
@@ -125,6 +137,37 @@ def graded_verdict(
             "content-free floor above chance."
         )
     return f"{head} does not hold."
+
+
+#: A graded task whose verdict map records no polarity. Never read as credit.
+POLARITY_NOT_RECORDED = "polarity not recorded"
+
+
+def graded_polarities(
+    floors: Sequence[TaskFloor], maps: dict[str, Any] | None = None
+) -> dict[str, str | None]:
+    """Each graded task's polarity, from the committed ``verdict_maps.jsonl``.
+
+    Attached here, at render time, rather than carried on ``TaskFloor``: it is a
+    reading of the eval's source, not something the sweep measured.
+    """
+    from .graded import load_verdict_maps, polarity_for
+
+    maps = load_verdict_maps() if maps is None else maps
+    return {f.task: polarity_for(f.task, maps) for f in floors}
+
+
+def polarity_sentence(
+    floors: Sequence[TaskFloor], polarity: dict[str, str | None]
+) -> str | None:
+    """Said only when it is true: every flag is on an inverted task."""
+    scored = {f.task for f in _scored(floors)}
+    flagged = sorted({f.task for f in floors if f.error is None and f.flagged} & scored)
+    if not flagged or any(polarity.get(t) != "inverted" for t in flagged):
+        return None
+    if len(flagged) == 1:
+        return "The one flag is on a task whose high score is the bad outcome."
+    return f"All {len(flagged)} flags are on tasks whose high score is the bad outcome."
 
 
 def _raw_ran(floor: TaskFloor) -> bool:
@@ -219,6 +262,12 @@ def provenance_block(
         + (f"`{fingerprint}`" if fingerprint else NOT_RECORDED)
         + " |",
     ]
+    # Stamped from 2026-10-10 on. A payload from before carries neither and
+    # renders exactly as it did; neither is ever back-filled.
+    if payload.get("run_fingerprint"):
+        lines.append(f"| run fingerprint | `{payload['run_fingerprint']}` |")
+    if payload.get("shuffle_seed") is not None:
+        lines.append(f"| shuffle seed | {payload['shuffle_seed']} |")
     if digest:
         lines.append(f"| sweep digest | `{digest[:16]}` |")
     for k, v in (extra or {}).items():
@@ -254,11 +303,21 @@ def _prereg_block(payload: dict[str, Any]) -> list[str]:
             "`results/smoke/` until `PREREGISTRATION.md` is in git history, and it "
             "then stamps that commit hash here.",
         ]
-    return [
+    lines = [
         f"Preregistration `{path}` was committed at `{commit[:12]}` **before** this "
         f"sweep ran. Anyone can check that independently: "
         f"`git log --format='%H %ad' -- {path}`.",
     ]
+    addendum = payload.get("addendum_commit")
+    if addendum:
+        lines += [
+            "",
+            f"Its close-out addendum, section 11, was committed at `{addendum[:12]}` "
+            "and was on `origin/master` **before** this sweep ran; the sweep refuses "
+            "to run otherwise. The first hash this prints is that commit: "
+            f"`git log -S'{ADDENDUM_HEADING}' --reverse --format='%H %ad' -- {path}`.",
+        ]
+    return lines
 
 
 # --------------------------------------------------------------------------
@@ -310,10 +369,12 @@ def render_matrix(
             )
         if payload_arm(payload) == "graded":
             # Section 8A's rule, not section 1's, and stated whichever way it falls.
+            pointed = polarity_sentence(floors_after, graded_polarities(floors_after))
             lines.append("")
             lines.append(
                 "> **Preregistration section 8A.** "
                 + graded_verdict(flagged_after, denom, threshold)
+                + (f" {pointed}" if pointed else "")
             )
         elif flagged_after < threshold:
             lines.append("")
@@ -660,13 +721,20 @@ def _ci(score: Any, mark: bool = False) -> str:
     return cell
 
 
-def render_graded_section(floors: Sequence[TaskFloor], payload: dict[str, Any]) -> str:
+def render_graded_section(
+    floors: Sequence[TaskFloor],
+    payload: dict[str, Any],
+    polarity: dict[str, str | None] | None = None,
+) -> str:
     """The model-graded arm: intervals, the grader, refusals, disagreement.
 
     Deliberately kept separate from the deterministic tables. The two arms are
     never added together into one rate: one is exact over whole datasets and
     free, the other is a capped sample graded by a model that can be wrong and
     costs money per call.
+
+    ``polarity`` maps task to polarity; by default it is read from the committed
+    ``verdict_maps.jsonl``.
     """
     grader = payload.get("grader") or {}
     graded_floors = [f for f in floors if f.graded and not f.error]
@@ -748,21 +816,27 @@ def render_graded_section(floors: Sequence[TaskFloor], payload: dict[str, Any]) 
         )
         lines.append("")
 
+    # Which way each task's score points, read from verdict_maps.jsonl. A flag
+    # on an inverted task is a content-free answer scoring as the bad outcome,
+    # never credit.
+    polarity = graded_polarities(graded_floors) if polarity is None else polarity
+
     lines.append("### Per task")
     lines.append("")
     lines.append(
         "| task | scorer | n | grader | majority | best content-free | 95% CI | "
-        "refusals | flagged |"
+        "refusals | flagged | polarity |"
     )
-    lines.append("|" + "---|" * 9)
+    lines.append("|" + "---|" * 10)
     dead: list[TaskFloor] = []
     for f in graded_floors:
+        points = polarity.get(f.task) or POLARITY_NOT_RECORDED
         if f.nothing_scored:
             dead.append(f)
             lines.append(
                 f"| `{f.task}` | `{_esc(f.scorer)}` | {f.n_samples} | "
                 f"`{_esc(f.grader_model)}` | NO RESULT | NO RESULT | - | "
-                f"{f.n_refusals} | not measured |"  # noqa: E501
+                f"{f.n_refusals} | not measured | {points} |"  # noqa: E501
             )
             continue
         best = f.members.get(f.best_member) if f.best_member else None
@@ -770,10 +844,11 @@ def render_graded_section(floors: Sequence[TaskFloor], payload: dict[str, Any]) 
             f"| `{f.task}` | `{_esc(f.scorer)}` | {f.n_samples} | "
             f"`{_esc(f.grader_model)}` | {_pct(f.majority)} | "
             f"{f.best_member or '-'} {_pct(f.best_mean)} | {_ci(best, mark=True)} | "
-            f"{f.n_refusals} | {', '.join(f.flagged_by) if f.flagged else 'no'} |"
+            f"{f.n_refusals} | {', '.join(f.flagged_by) if f.flagged else 'no'} | "
+            f"{points} |"
         )
     if not graded_floors:
-        lines.append("| _(no graded task produced a floor)_ | | | | | | | | |")
+        lines.append("| _(no graded task produced a floor)_ | | | | | | | | | |")
     lines.append("")
 
     if dead:
@@ -944,10 +1019,14 @@ def render_coverage(
     floors: Sequence[TaskFloor],
     digest: str | None = None,
     payload: dict[str, Any] | None = None,
+    not_counted: Sequence[Ruling] = (),
 ) -> str:
+    """``not_counted`` is the deterministic arm's ``not_counted`` rows. The graded
+    arm passes none: its list is section 8A's eight, which no row touches."""
     payload = payload or {}
+    listed = {r.task: r for r in not_counted}
     swept = set(swept_tasks)
-    errored = {f.task: f.error for f in floors if f.error}
+    errored = {f.task: f.error for f in floors if f.error and f.task not in listed}
     scored = {f.task for f in floors if f.error is None and f.members}
     flagged = {f.task for f in floors if f.error is None and f.flagged}
     reachable = [row for row in inventory if row["reachable"]]
@@ -971,6 +1050,8 @@ def render_coverage(
     lines.append("|---|---|")
     lines.append(f"| tasks declared in `eval.yaml` files | {len(inventory)} |")
     lines.append(f"| reachable for the deterministic sweep | {len(reachable)} |")
+    if listed:
+        lines.append(f"| reachable, not counted, with a treatment | {len(listed)} |")
     lines.append(f"| excluded, with a reason | {len(inventory) - len(reachable)} |")
     lines.append(f"| attempted in this run | {len(swept)} |")
     lines.append(f"| produced a scored floor | {len(scored)} |")
@@ -982,6 +1063,12 @@ def render_coverage(
     lines.append("")
     lines.append(render_exclusion_table(inventory))
     lines.append("")
+
+    if listed:
+        lines.append("## Not counted")
+        lines.append("")
+        lines.append(render_treatment_table(not_counted))
+        lines.append("")
 
     lines.append("## Run failures")
     lines.append("")
@@ -1020,7 +1107,10 @@ def render_coverage(
     covered = 0
     for row in inventory:
         task = row["name"]
-        if task in errored:
+        if task in listed:
+            status, reason = "not counted", "not_counted"
+            detail = listed[task].treatment or ""
+        elif task in errored:
             status, reason, detail = "failed", "load_error", errored[task]
         elif task in scored:
             status = "flagged" if task in flagged else "swept, clean"
@@ -1063,22 +1153,61 @@ def render_exclusion_table(inventory: Sequence[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def render_treatment_table(not_counted: Sequence[Ruling]) -> str:
+    """The ``not_counted`` rows grouped by treatment, every task named."""
+    by_treatment: dict[str, list[str]] = {}
+    for r in not_counted:
+        by_treatment.setdefault(r.treatment or "", []).append(r.task)
+    lines = [
+        "Reachable, and deliberately not swept. Each task has a `not_counted` row in "
+        "`rulings.jsonl` that quotes the source line its treatment rests on, so the "
+        "list is data rather than code.",
+        "",
+        "| treatment | tasks | which |",
+        "|---|---|---|",
+    ]
+    for treatment, tasks in sorted(by_treatment.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        names = ", ".join(f"`{t.split('/')[-1]}`" for t in sorted(tasks))
+        lines.append(f"| {_esc(treatment)} | {len(tasks)} | {names} |")
+    lines.append(f"| **not counted** | **{len(not_counted)}** | |")
+    return "\n".join(lines)
+
+
 # --------------------------------------------------------------------------
 # Rulings log
 # --------------------------------------------------------------------------
 
 
-def render_rulings(applied: Sequence[AppliedRuling], unmatched: Sequence[Ruling]) -> str:
+def render_rulings(
+    applied: Sequence[AppliedRuling],
+    unmatched: Sequence[Ruling],
+    not_counted: Sequence[Ruling] = (),
+) -> str:
+    """``not_counted`` is listed on the deterministic arm only; see render_coverage."""
     lines: list[str] = ["# Rulings applied", "", GENERATED_BANNER, ""]
     lines.append(
         "Every judgement call in the sweep, applied mechanically from "
         "`rulings.jsonl`. The flag rate is reported both before and after these."
     )
     lines.append("")
-    if not applied and not unmatched:
+    if not applied and not unmatched and not not_counted:
         lines.append("`rulings.jsonl` is empty. No judgement call has been made yet.")
         lines.append("")
         return "\n".join(lines)
+    if not_counted:
+        lines.append("## Not counted: listed, never swept")
+        lines.append("")
+        lines.append("| task | treatment | reason | source |")
+        lines.append("|---|---|---|---|")
+        for r in not_counted:
+            lines.append(
+                f"| `{r.task}` | {_esc(r.treatment)} | {_esc(r.reason)} | "
+                f"`{_esc(r.source)}` |"
+            )
+        lines.append("")
+        if applied or unmatched:
+            lines.append("## Rulings applied to this sweep")
+            lines.append("")
     if applied:
         lines.append("| task | action | effect | reason | source |")
         lines.append("|---|---|---|---|---|")
@@ -1267,7 +1396,11 @@ def render_readme_graded(
     )
     if denom and payload_arm(payload) == "graded":
         lines.append("")
-        lines.append(graded_verdict(flagged, denom, negative_result_threshold(payload)))
+        pointed = polarity_sentence(floors, graded_polarities(floors))
+        lines.append(
+            graded_verdict(flagged, denom, negative_result_threshold(payload))
+            + (f" {pointed}" if pointed else "")
+        )
     lines.append("")
     lines.append(
         f"Judged by `{_esc(grader.get('model', 'unknown'))}`. "
@@ -1572,21 +1705,105 @@ def floors_from_payload(payload: dict[str, Any]) -> list[TaskFloor]:
     return floors
 
 
+# --------------------------------------------------------------------------
+# Determinism across two runs (section 11.7)
+#
+# The close-out list runs twice, in separate processes, and `report --repeat`
+# reads the second payload. A task whose two digests differ, or that errored in
+# only one run, is "not run: non-deterministic": marked before rulings, so it
+# leaves both the before and the after rate. Separate processes also catch
+# set-order and hash-seed effects one process cannot.
+# --------------------------------------------------------------------------
+
+
+def repeat_mismatch(first: dict[str, Any], second: dict[str, Any]) -> list[str]:
+    """What stops two payloads' per-task digests from being compared.
+
+    Empty when they are comparable: the same pins, run fingerprint and task
+    list, and both carry ``task_digests``. A difference in any of those means
+    the second run was a different measurement, not a repeat of the first.
+    """
+    problems = [
+        f"{key} differ: {first.get(key)!r} vs {second.get(key)!r}"
+        for key in REPEAT_MUST_MATCH
+        if first.get(key) != second.get(key)
+    ]
+    for name, payload in (("first", first), ("second", second)):
+        if not payload.get("task_digests"):
+            problems.append(f"the {name} payload carries no task_digests")
+    return problems
+
+
+def nondeterministic_tasks(first: dict[str, Any], second: dict[str, Any]) -> list[str]:
+    """Tasks whose two runs differ in digest, or errored in only one of them."""
+    d1 = first.get("task_digests") or {}
+    d2 = second.get("task_digests") or {}
+
+    def errored(payload: dict[str, Any]) -> set[str]:
+        return {row["task"] for row in payload.get("floors", []) if row.get("error")}
+
+    differ = {t for t in set(d1) | set(d2) if d1.get(t) != d2.get(t)}
+    return sorted(differ | (errored(first) ^ errored(second)))
+
+
+def apply_repeat(
+    floors: Sequence[TaskFloor], payload: dict[str, Any], repeat: dict[str, Any]
+) -> list[str]:
+    """Mark the tasks two runs disagree on, in place. Returns them.
+
+    Raises ValueError when the second payload is not a repeat of the first.
+    """
+    problems = repeat_mismatch(payload, repeat)
+    if problems:
+        raise ValueError("the second run is not a repeat: " + "; ".join(problems))
+    moved = nondeterministic_tasks(payload, repeat)
+    for f in floors:
+        if f.task in moved:
+            f.error = NOT_RUN_NONDETERMINISTIC
+    return moved
+
+
+def readme_is_written_here(
+    payload: dict[str, Any], arms: dict[str, Any], repeat: dict[str, Any] | None
+) -> bool:
+    """Whether this regeneration may write README.md.
+
+    Once the deterministic payload carries ``addendum_commit`` the README is the
+    close-out README, and only `report --out results --repeat ...` writes it:
+    never a graded regenerate, which would rebuild it from one arm's side, and
+    never a deterministic one without the second run to read determinism from.
+    """
+    if not (arms.get("payload") or {}).get("addendum_commit"):
+        return True
+    return payload_arm(payload) == "deterministic" and repeat is not None
+
+
 def write_all(
     payload: dict[str, Any],
     out_dir: pathlib.Path,
     rulings_path: pathlib.Path,
     inventory: Sequence[dict[str, Any]] | None = None,
     readme_path: pathlib.Path | None = None,
+    repeat: dict[str, Any] | None = None,
 ) -> list[pathlib.Path]:
-    """Regenerate every markdown artifact from a sweep payload. Returns paths."""
-    from .rulings import apply_rulings, load_rulings
+    """Regenerate every markdown artifact from a sweep payload. Returns paths.
+
+    ``repeat`` is a second run's payload. Tasks the two runs disagree on are
+    "not run: non-deterministic" in everything written here.
+    """
+    from .rulings import apply_rulings, load_rulings, not_counted
 
     out_dir.mkdir(parents=True, exist_ok=True)
     floors_before = floors_from_payload(payload)
+    if repeat is not None:
+        # Before rulings, so a moved task is out of the before rate too.
+        apply_repeat(floors_before, payload, repeat)
     rules = load_rulings(rulings_path)
     floors_after, applied, unmatched = apply_rulings(floors_before, rules)
     digest = payload.get("digest")
+    # The not_counted rows shape the deterministic list only. The graded arm's
+    # files never mention them, so they stay byte-identical when the rows land.
+    listed = not_counted(rules) if payload_arm(payload) == "deterministic" else []
 
     written: list[pathlib.Path] = []
 
@@ -1600,18 +1817,21 @@ def write_all(
         coverage = out_dir / "coverage.md"
         coverage.write_text(
             render_coverage(
-                inventory, payload.get("tasks", []), floors_after, digest, payload
+                inventory, payload.get("tasks", []), floors_after, digest, payload,
+                not_counted=listed,
             ),
             encoding="utf-8",
         )
         written.append(coverage)
 
     rulings_md = out_dir / "rulings_applied.md"
-    rulings_md.write_text(render_rulings(applied, unmatched), encoding="utf-8")
+    rulings_md.write_text(
+        render_rulings(applied, unmatched, not_counted=listed), encoding="utf-8"
+    )
     written.append(rulings_md)
 
-    if readme_path is not None:
-        arms = readme_arms(payload, floors_after, out_dir, rules)
+    arms = readme_arms(payload, floors_after, out_dir, rules) if readme_path else {}
+    if readme_path is not None and readme_is_written_here(payload, arms, repeat):
         readme_path.write_text(
             render_readme(
                 arms["floors"],

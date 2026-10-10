@@ -8,7 +8,7 @@
 
 Before rulings the count was **3 of 7**. The raw arm -- members written plainly, ignoring each task's answer template -- was **not run** on any of the 7 tasks: none of those tasks declares an answer template, so both arms would score the same strings and only the rendered arm was scored. The headline uses the rendered arm, as preregistered. `coverage.md` says what is not in this denominator.
 
-> **Preregistration section 8A.** 3 of 7 flagged at the Wilson lower bound; the arm's preregistered negative result (fewer than three) does not hold.
+> **Preregistration section 8A.** 3 of 7 flagged at the Wilson lower bound; the arm's preregistered negative result (fewer than three) does not hold. All 3 flags are on tasks whose high score is the bad outcome.
 
 Preregistration `PREREGISTRATION.md` was committed at `912345f8d5be` **before** this sweep ran. Anyone can check that independently: `git log --format='%H %ad' -- PREREGISTRATION.md`.
 
@@ -180,16 +180,16 @@ Rates here are over a **capped sample**, graded by a model, not over a whole dat
 
 ### Per task
 
-| task | scorer | n | grader | majority | best content-free | 95% CI | refusals | flagged |
-|---|---|---|---|---|---|---|---|---|
-| `inspect_evals/coconot` | `inspect_ai/model_graded_qa` | 100 | `openai/gpt-5.6-luna` | 2.3% | format_only 50.6% | [40.4, 60.7] | 152 | all_letters, echo, format_only |
-| `inspect_evals/fortress_adversarial` | `inspect_evals/fortress_scorer_adversarial` | 100 | `openai/gpt-5.6-luna` | 2.7% | echo 6.9% | [0.2, 5.6] **point outside** | 0 | no |
-| `inspect_evals/fortress_benign` | `inspect_evals/fortress_scorer_benign` | 100 | `openai/gpt-5.6-luna` | 3.3% | refusal 100.0% | [96.3, 100.0] | 882 | boilerplate, refusal |
-| `inspect_evals/frontierscience` | `inspect_evals/frontierscience_scorer` | 100 | `openai/gpt-5.6-luna` | 2.0% | echo 0.1% | [0.0, 3.7] | 1 | no |
-| `inspect_evals/mask` | `inspect_evals/accuracy_and_honesty` | 100 | `openai/gpt-5.6-luna` | NO RESULT | NO RESULT | - | 0 | not measured |
-| `inspect_evals/moru` | `inspect_evals/moru_scorer` | 100 | `openai/gpt-5.6-luna` | 1.5% | refusal 7.2% | [0.0, 3.7] **point outside** | 0 | no |
-| `inspect_evals/sosbench` | `inspect_evals/llm_judge_scorer` | 100 | `openai/gpt-5.6-luna` | 1.0% | echo 7.0% | [3.4, 13.7] | 0 | echo |
-| `inspect_evals/uccb` | `inspect_ai/model_graded_qa` | 100 | `openai/gpt-5.6-luna` | 1.0% | empty 0.0% | [0.0, 3.7] | 53 | no |
+| task | scorer | n | grader | majority | best content-free | 95% CI | refusals | flagged | polarity |
+|---|---|---|---|---|---|---|---|---|---|
+| `inspect_evals/coconot` | `inspect_ai/model_graded_qa` | 100 | `openai/gpt-5.6-luna` | 2.3% | format_only 50.6% | [40.4, 60.7] | 152 | all_letters, echo, format_only | inverted |
+| `inspect_evals/fortress_adversarial` | `inspect_evals/fortress_scorer_adversarial` | 100 | `openai/gpt-5.6-luna` | 2.7% | echo 6.9% | [0.2, 5.6] **point outside** | 0 | no | inverted |
+| `inspect_evals/fortress_benign` | `inspect_evals/fortress_scorer_benign` | 100 | `openai/gpt-5.6-luna` | 3.3% | refusal 100.0% | [96.3, 100.0] | 882 | boilerplate, refusal | inverted |
+| `inspect_evals/frontierscience` | `inspect_evals/frontierscience_scorer` | 100 | `openai/gpt-5.6-luna` | 2.0% | echo 0.1% | [0.0, 3.7] | 1 | no | credit |
+| `inspect_evals/mask` | `inspect_evals/accuracy_and_honesty` | 100 | `openai/gpt-5.6-luna` | NO RESULT | NO RESULT | - | 0 | not measured | credit |
+| `inspect_evals/moru` | `inspect_evals/moru_scorer` | 100 | `openai/gpt-5.6-luna` | 1.5% | refusal 7.2% | [0.0, 3.7] **point outside** | 0 | no | credit |
+| `inspect_evals/sosbench` | `inspect_evals/llm_judge_scorer` | 100 | `openai/gpt-5.6-luna` | 1.0% | echo 7.0% | [3.4, 13.7] | 0 | echo | inverted |
+| `inspect_evals/uccb` | `inspect_ai/model_graded_qa` | 100 | `openai/gpt-5.6-luna` | 1.0% | empty 0.0% | [0.0, 3.7] | 53 | no | credit |
 
 > **1 task(s) produced NO RESULT**: not one grading call succeeded, so there is no floor to report. This is written as `NO RESULT`, never as 0.0%. A task where nothing scored has not been measured, and printing a zero there would be the same class of mistake this project exists to find.
 
