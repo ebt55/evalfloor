@@ -36,7 +36,6 @@ from .battery import BATTERY, SHUFFLE_SEED, battery_fingerprint, run_fingerprint
 from .drive import TaskRun, drive_task_async
 from .report import (
     ADDENDUM_HEADING,
-    floors_from_payload,
     negative_result_threshold,
     raw_arm_clause,
     read_sweep,
@@ -970,8 +969,8 @@ def cmd_report(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_UNRUNNABLE
-    from .report import apply_repeat, repeat_mismatch
-    from .rulings import apply_rulings, load_rulings
+    from .report import prepare_floors, repeat_mismatch
+    from .rulings import load_rulings
 
     payload = read_sweep(sweep_path)
     repeat = None
@@ -993,9 +992,11 @@ def cmd_report(args: argparse.Namespace) -> int:
     written = _regenerate(
         out, pathlib.Path(args.rulings), payload, readme=readme, repeat=repeat
     )
-    floors = floors_from_payload(payload)
+    # The same floors write_all read: one preparation, never a second recipe.
+    floors, after, _, _, moved = prepare_floors(
+        payload, load_rulings(pathlib.Path(args.rulings)), repeat
+    )
     if repeat is not None:
-        moved = apply_repeat(floors, payload, repeat)
         if moved:
             print(f"not run, non-deterministic across the two runs: {', '.join(moved)}")
         else:
@@ -1005,7 +1006,6 @@ def cmd_report(args: argparse.Namespace) -> int:
             "README.md not rewritten: once section 11 is stamped, only "
             "`report --out results --repeat <second sweep.json>` writes it"
         )
-    after, _, _ = apply_rulings(floors, load_rulings(pathlib.Path(args.rulings)))
     flagged, denom = flag_rate(floors)
     flagged_after, _ = flag_rate(after)
     for path in written:

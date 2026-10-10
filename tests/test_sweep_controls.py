@@ -652,6 +652,46 @@ def test_two_payloads_that_differ_in_one_task_render_it_not_run(tmp_path, capsys
     assert "Before rulings the count was **0 of 1**" in matrix
 
 
+def test_prepare_floors_is_the_one_preparation(tmp_path) -> None:
+    """write_all and cmd_report read the same floors: rebuilt from the payload,
+    marked against the second run before rulings, then ruled on."""
+    from evalfloor.aggregate import flag_rate
+    from evalfloor.report import NOT_RUN_NONDETERMINISTIC, prepare_floors
+    from evalfloor.rulings import load_rulings
+
+    first = _two_task_payload()
+    rulings = tmp_path / "rulings.jsonl"
+    rulings.write_text(
+        json.dumps({"task": "evalfloor/control_tight", "action": "unflag",
+                    "reason": "fixture", "source": "tests/x.py:1"}) + "\n"
+        + json.dumps({"task": "evalfloor/absent", "action": "note",
+                      "reason": "fixture", "source": "tests/x.py:2"}) + "\n"
+        + json.dumps({"task": "evalfloor/never_swept", "action": "not_counted",
+                      "treatment": "needs a judge", "reason": "fixture",
+                      "source": "tests/x.py:3"}) + "\n",
+        encoding="utf-8",
+    )
+    rules = load_rulings(rulings)
+
+    before, after, applied, unmatched, moved = prepare_floors(first, rules)
+    assert moved == []
+    assert flag_rate(before) == flag_rate(after) == (1, 2)
+    assert [a.ruling.task for a in applied] == ["evalfloor/control_tight"]
+    assert [r.task for r in unmatched] == ["evalfloor/absent"], "not_counted is never unmatched"
+
+    second = _two_task_payload(
+        task_digests=dict(first["task_digests"], **{"evalfloor/control_loose": "0" * 64})
+    )
+    before, after, _, _, moved = prepare_floors(first, rules, second)
+    assert moved == ["evalfloor/control_loose"]
+    for floors in (before, after):
+        loose = next(f for f in floors if f.task == "evalfloor/control_loose")
+        assert loose.error == NOT_RUN_NONDETERMINISTIC
+    assert flag_rate(before) == (0, 1), "marked before rulings, so out of the before rate"
+    # The payload itself is never touched.
+    assert all(not row.get("error") for row in first["floors"])
+
+
 def test_the_closeout_readme_is_written_only_with_the_second_run(tmp_path) -> None:
     """Once the deterministic payload carries addendum_commit, a graded
     regenerate never writes README.md, and neither does a deterministic one
@@ -671,11 +711,14 @@ def test_the_closeout_readme_is_written_only_with_the_second_run(tmp_path) -> No
     written = write_all(det, results, rulings, readme_path=readme)
     assert readme not in written and not readme.exists(), "no second run yet"
 
-    written = write_all(det, results, rulings, readme_path=readme, repeat=_two_task_payload())
-    assert readme in written and readme.exists()
+    # With the second run it is the close-out README's turn. That needs both
+    # inventories, and with neither on disk it refuses rather than falling back;
+    # tests/test_controls.py renders it in full.
+    with pytest.raises(FileNotFoundError, match="task_inventory.json"):
+        write_all(det, results, rulings, readme_path=readme, repeat=_two_task_payload())
+    assert not readme.exists()
 
     # Without section 11 stamped, nothing changes: the README is written.
-    readme.unlink()
     plain = _two_task_payload()
     write_sweep(plain, results / "sweep.json")
     assert readme in write_all(graded, results / "graded", rulings, readme_path=readme)

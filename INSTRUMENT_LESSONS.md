@@ -288,3 +288,30 @@ One row per defect. Newest last.
   reported by MattFisher as #2399 and #2400, fixed 2026-10-09, after 0.24.0),
   and the determinism control runs the whole list in two processes.
 * **Pinned by** the seeded-shuffle tests (B4).
+
+## 011 -- the flag rule assumed every task's score points the same way
+
+* **Caught** 2026-10-06 (study pack) and 2026-10-09 (plan reviews' recount).
+* **Symptom** three graded flags could be read as credit where a high score is
+  the bad outcome; "58 reachable" implied 58 readable tasks, but 4 need solver
+  state, 6 score behaviour, and 3 that the inventory calls
+  `deterministic_custom` take a judge (`vqa_rad`'s open questions;
+  `agentharm`'s `combined_scorer`); `verdict_maps.jsonl` called `sosbench`
+  inverted relative to every other task in the arm, when four of the eight are
+  inverted: `coconot`, `fortress_adversarial`, `fortress_benign` and
+  `sosbench`. All three flags are on those.
+* **Cause** §4 assumes higher = credit and a completion-only scorer; neither was
+  recorded per task.
+* **What it invalidated** no count; the reading of three flags and the implied
+  denominator.
+* **Fix** polarity per graded task in `verdict_maps.jsonl`, each value quoting
+  its source line, and printed beside every graded flag; countability as
+  `not_counted` rulings, written with §11; `sweep --closeout` refuses to run
+  until §11 is on origin.
+* **Pinned by** the polarity and `not_counted` tests:
+  `tests/test_polarity.py::test_the_committed_file_records_every_graded_tasks_polarity`
+  and `::test_row_six_no_longer_calls_sosbench_the_only_inverted_task`;
+  `tests/test_graded.py::test_the_graded_table_carries_each_tasks_polarity` and
+  `::test_a_flagged_task_with_no_polarity_prints_polarity_not_recorded`;
+  `tests/test_controls.py::test_not_counted_rows_are_listed_not_swept`; and
+  `tests/test_sweep_controls.py::test_closeout_list_and_not_counted_rows_partition_the_58_reachable`.

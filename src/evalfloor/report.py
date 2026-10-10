@@ -13,11 +13,15 @@ and the determinism control is a plain file comparison.
 
 from __future__ import annotations
 
+import datetime
+import html
 import json
 import pathlib
 import re
-from typing import Any, Sequence
+from dataclasses import dataclass
+from typing import Any, Callable, Sequence
 
+from . import closeout
 from .aggregate import TaskFloor, collision_count, flag_rate
 from .battery import (
     ARMS,
@@ -605,12 +609,16 @@ def render_matrix(
     return "\n".join(lines)
 
 
-def echo_headline(floors: Sequence[TaskFloor]) -> str | None:
+def echo_headline(floors: Sequence[TaskFloor], generic: bool = False) -> str | None:
     """The ``echo`` finding as one sentence, computed from the sweep.
 
     Echoing the question back carries no information about the answer, so any
     score it gets is the scorer crediting the input for containing the target.
     Every number in the sentence comes from the payload; none is typed.
+
+    The first sweep's wording -- the samples "already contain a label" -- is
+    true of ``paws``'s ``includes()`` and of no scorer in general, so the
+    close-out README asks for ``generic``: what scored, against which baseline.
     """
     scored = [
         f for f in floors if f.error is None and f.members and not f.nothing_scored
@@ -629,7 +637,15 @@ def echo_headline(floors: Sequence[TaskFloor]) -> str | None:
         f"Echoing the question back scores above zero on **{len(above_zero)} of "
         f"{len(with_echo)}** tasks swept."
     )
-    if worst_echo.n_correct > 0:
+    if worst_echo.n_correct > 0 and generic:
+        short = worst.task.split("/")[-1]
+        sentence += (
+            f" The most is on `{short}`: **{worst_echo.n_correct:,} of "
+            f"{worst_echo.n_scored:,}** samples score as correct when their own input "
+            f"is handed back as the answer, against a {_pct(worst.majority)} `majority` "
+            "baseline. Whatever the scorer credits there was in the question."
+        )
+    elif worst_echo.n_correct > 0:
         short = worst.task.split("/")[-1]
         sentence += (
             f" On `{short}`, **{worst_echo.n_correct:,} of {worst_echo.n_scored:,}** "
@@ -1302,6 +1318,12 @@ INSTRUMENT_DEFECT_ROWS: tuple[tuple[str, str, str], ...] = (
         "the reproducibility of the published count, and with it the section 1 "
         "verdict on 0.20.0: 4 is under five, 5 is not",
     ),
+    (
+        "011",
+        "the flag rule assumed every task's score points the same way",
+        "no count; the reading of three graded flags, all on tasks whose high score "
+        "is the bad outcome, and the implied denominator of 58 readable tasks",
+    ),
 )
 
 
@@ -1342,8 +1364,6 @@ def readme_arms(
     Returns ``{"floors", "payload", "graded_floors", "graded_payload"}`` where
     ``floors``/``payload`` are always the **deterministic** arm's.
     """
-    from .rulings import apply_rulings
-
     def _load(path: pathlib.Path) -> tuple[list[TaskFloor], dict[str, Any] | None]:
         if not path.exists():
             return [], None
@@ -1352,7 +1372,7 @@ def readme_arms(
             # A smoke payload is a harness check, not a result, and must never
             # reach the README by the side door of the other arm's regenerate.
             return [], None
-        after, _, _ = apply_rulings(floors_from_payload(loaded), list(rules))
+        _, after, _, _, _ = prepare_floors(loaded, rules)
         return after, loaded
 
     root = results_root(out_dir)
@@ -1429,20 +1449,291 @@ def render_readme_graded(
     return lines
 
 
+# --------------------------------------------------------------------------
+# Figures in the README
+#
+# The figures are drawn elsewhere (`figures.py`); the README only places them.
+# Each arrives as a FigureRef carrying a digest of the data it was drawn from,
+# and the README prints that digest beside the figure and the data itself as a
+# table under it, so a figure can always be checked against the numbers.
+# --------------------------------------------------------------------------
+
+#: The close-out README's figures, each with a fixed place: F1 after the first
+#: paragraph, G1 in "What this is", F2 in the fix paragraph, F3 by the
+#: denominator, and G2 with its transcript in "Reproducing it".
+README_FIGURES: tuple[str, ...] = ("F1", "G1", "F2", "F3", "G2")
+
+
+@dataclass(frozen=True)
+class FigureRef:
+    """One figure as the README embeds it."""
+
+    id: str
+    alt: str
+    caption: str
+    #: sha256 of the data the figure was drawn from.
+    data_digest: str
+    light_svg: str
+    dark_svg: str
+    #: The same data as a markdown table, printed under the figure.
+    table_md: str
+    gif: str | None = None
+    #: A text transcript, for a figure that records a terminal session.
+    transcript: str | None = None
+
+
+#: Builds the README's figures. Called once per close-out README, with keyword
+#: arguments ``payload``, ``floors`` (after rulings), ``counts`` and ``repeat``.
+FigureProvider = Callable[..., Sequence[FigureRef]]
+
+
+def render_figure(fig: FigureRef) -> list[str]:
+    """A figure as markdown: light and dark SVG, caption, digest, data."""
+    lines = [
+        '<picture><source media="(prefers-color-scheme: dark)" '
+        f'srcset="{html.escape(fig.dark_svg, quote=True)}">'
+        f'<img src="{html.escape(fig.light_svg, quote=True)}" '
+        f'alt="{html.escape(fig.alt, quote=True)}"></picture>',
+        "",
+        fig.caption,
+    ]
+    if fig.gif:
+        lines += ["", f"Animated: [{fig.id}]({fig.gif})"]
+    lines += [
+        "",
+        f"<!-- figure {fig.id} data sha256:{fig.data_digest} -->",
+        "",
+        "<details><summary>Data</summary>",
+        "",
+        fig.table_md,
+        "",
+        "</details>",
+    ]
+    if fig.transcript:
+        lines += [
+            "",
+            "<details><summary>Transcript</summary>",
+            "",
+            "```text",
+            fig.transcript,
+            "```",
+            "",
+            "</details>",
+        ]
+    return lines
+
+
+def _figures_by_id(figures: Sequence[FigureRef]) -> dict[str, FigureRef]:
+    """Exactly the README's figures, once each. A missing one is a hole in the
+    README and an extra one would never be placed, so both are refused."""
+    by_id: dict[str, FigureRef] = {}
+    for fig in figures:
+        if fig.id in by_id:
+            raise ValueError(f"figure {fig.id} is given twice")
+        by_id[fig.id] = fig
+    missing = [i for i in README_FIGURES if i not in by_id]
+    extra = sorted(set(by_id) - set(README_FIGURES))
+    if missing or extra:
+        raise ValueError(
+            f"the close-out README places {', '.join(README_FIGURES)}; "
+            f"missing {missing or 'none'}, unplaced {extra or 'none'}"
+        )
+    return by_id
+
+
+# --------------------------------------------------------------------------
+# The README's sections, shared by the first-sweep and the close-out README
+# --------------------------------------------------------------------------
+
+
+def _readme_header() -> list[str]:
+    return [
+        "# eval-floor",
+        "",
+        GENERATED_BANNER,
+        "",
+        "**What score does an answer with no content in it already get?**",
+        "",
+        "## The number, and its denominator",
+        "",
+    ]
+
+
+def _readme_what_this_is() -> list[str]:
+    return [
+        "## What this is",
+        "",
+        "A scorer in Inspect is a function of a completion and a target. It does not "
+        "care whether a model produced the completion. So eval-floor drives an eval's "
+        "real scorer, over its real dataset, with a battery of completions that carry "
+        "no information about the sample: the empty string, a refusal, every label "
+        "concatenated. No model is called. The sweep costs nothing and is "
+        "deterministic, which is what makes it reproducible by anyone.",
+        "",
+    ]
+
+
+def _readme_case() -> list[str]:
+    return [
+        "## The case that started it",
+        "",
+        "Inspect Evals issue "
+        "[#2331](https://github.com/UKGovernmentBEIS/inspect_evals/issues/2331) was "
+        "opened on 2026-08-31 by **caiotheodoro**, who found that the constant string "
+        '`"yesno"` scores 8000 of 8000 on the `paws` eval, because the eval is scored '
+        "with `includes()` and both labels are substrings of that constant. **That "
+        "finding is theirs, not this project's.** eval-floor generalises it, asking "
+        "the same question mechanically of every task in the collection. "
+        # Dated, because "the latest release" is only ever true on a day.
+        "[#2334](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2334) by "
+        "**jkopczyn** merged 2026-09-16; the v0.21.0 release notes (2026-09-17) list "
+        "the `paws` and `boolq` fix; as of 2026-10-10 the latest release is 0.24.0. "
+        "The anchor stays on 0.20.0, where the behaviour is present. "
+        "`tests/test_paws_regression.py` reproduces it from committed code.",
+        "",
+    ]
+
+
+def _readme_reachability(inventory: Sequence[dict[str, Any]]) -> list[str]:
+    return [
+        "## Reachability",
+        "",
+        "The denominator comes before the result. Every declared task is either "
+        "swept or excluded with a recorded reason; the full per-task table is in "
+        "[`results/coverage.md`](results/coverage.md).",
+        "",
+        render_exclusion_table(inventory),
+        "",
+    ]
+
+
+def _readme_battery() -> list[str]:
+    return [
+        "## The battery",
+        "",
+        "Members are defined semantically and written down in the task's own answer "
+        "template when it declares one. Both arms, `raw` and `rendered`, are scored "
+        "and reported, so the effect of that rendering is visible rather than assumed. "
+        "The flag rule uses the rendered arm.",
+        "",
+        render_battery_table(),
+        "",
+        "> **Flag rule.** A task is flagged when at least one content-free member "
+        "scores at or above that task's own `majority` baseline **and** strictly "
+        "above zero. `majority` is computed per task from the dataset, never assumed: "
+        "the PAWS test split is 55.8 per cent `No`, so its chance line is 0.558.",
+        "",
+    ]
+
+
+def _readme_defects() -> list[str]:
+    lines = [
+        "## Instrument defects found so far",
+        "",
+        "Defects are logged, not quietly fixed. What the instrument got wrong is what "
+        "tells a reader how far to trust what it now says. Full write-ups in "
+        "[`INSTRUMENT_LESSONS.md`](INSTRUMENT_LESSONS.md).",
+        "",
+        "| # | defect | what it would have invalidated |",
+        "|---|---|---|",
+    ]
+    for number, defect, invalidated in INSTRUMENT_DEFECT_ROWS:
+        lines.append(f"| {number} | {defect} | {invalidated} |")
+    lines.append("")
+    return lines
+
+
+def _readme_limitations(pin_row: str) -> list[str]:
+    return [
+        "## Limitations",
+        "",
+        "| limitation | what it means for the number |",
+        "|---|---|",
+        "| A flagged task is not a worthless benchmark | a loose scorer inflates a "
+        "number without saying the underlying task is easy. **No claim is made about "
+        "the conclusions of any published paper** that used any of these evals. |",
+        pin_row,
+        "| Deterministic scorers only | model-graded tasks are excluded from this "
+        "number and deferred to a separate arm with its own intervals. The exclusion "
+        "is counted, not hidden. |",
+        "| The rendering rule is a choice | writing a member in the task's answer "
+        "template changes what it scores. Both arms are published so the size of that "
+        "effect is visible, but the headline depends on which arm is preregistered. |",
+        "| Reachability is far below the collection size | most tasks need a "
+        "container, a grader model, a gated dataset or an extra dependency. The "
+        "denominator is published as prominently as the rate. |",
+        "| `echo` on multimodal tasks | where inputs are images, echoing the input "
+        "back is not well defined; such tasks are marked in the coverage file. |",
+        "| One judge, and it can be wrong | the graded arm is scored by a single "
+        "cheap model. Its id and the snapshot served are recorded in every row, and "
+        "a second grader from a different family gives a measured disagreement rate "
+        "-- which bounds the judge noise rather than removing it. |",
+        "| Per-eval grade vocabularies | graded evals answer in their own words "
+        "(ACCEPTABLE / NEITHER / COMPLIANCE and so on), and Inspect's generic "
+        "converter silently returns 0.0 for any it does not know, which understates "
+        "a floor. Mappings live in `verdict_maps.jsonl`, each quoting the eval "
+        "source line; an unmapped verdict is excluded and reported, never zeroed. |",
+        "",
+    ]
+
+
+_GENERATED_PARAGRAPH = (
+    "Every number in `results/` and in this file is generated. None is typed by "
+    "hand. Judgement calls live in `rulings.jsonl`, one row each, quoting the "
+    "source line they came from, and the report applies that file mechanically. "
+    "`evalfloor sweep` refuses to write a non-smoke result unless "
+    "`PREREGISTRATION.md` is already committed in git history, and it records that "
+    "commit hash in every file it generates."
+)
+
+
+def _readme_disclosure() -> list[str]:
+    return [
+        "## Disclosure",
+        "",
+        "**Built with LLM coding agents (Claude), with the author reviewing every "
+        "number's source.** The harness, the battery definitions and the tests were "
+        "written with Claude Code doing the typing under direction. The design, the "
+        "preregistration, the measurement choices and every claim made about the "
+        "results are the author's, and the anchoring result is checked in as a test "
+        "anyone can run against pinned versions rather than taken on trust.",
+        "",
+        "## Licence",
+        "",
+        "MIT, (c) 2026 Ebin Babu Thomas.",
+        "",
+    ]
+
+
 def render_readme(
     floors: Sequence[TaskFloor] | None,
     inventory: Sequence[dict[str, Any]] | None,
     payload: dict[str, Any] | None = None,
     graded_floors: Sequence[TaskFloor] | None = None,
     graded_payload: dict[str, Any] | None = None,
+    closeout_inputs: CloseoutReadme | None = None,
+    figures: Sequence[FigureRef] | None = None,
 ) -> str:
     """The README, with the number and the denominator first.
 
     Before a real sweep exists the headline is the literal placeholder
     ``{flagged} of {reachable} tasks``, so it is obvious that nothing is being
     claimed yet. ``evalfloor report`` fills it from ``results/sweep.json``.
+
+    A deterministic payload that carries ``addendum_commit`` is the close-out
+    sweep's, and gets the close-out README; that needs ``closeout_inputs`` and
+    the figures, and refuses to render without either.
     """
     payload = payload or {}
+    if payload.get("addendum_commit"):
+        if closeout_inputs is None:
+            raise ValueError("the close-out README needs its counts (closeout_inputs)")
+        if figures is None:
+            raise ValueError("the close-out README needs its figures; none were given")
+        return render_closeout_readme(
+            floors or [], payload, graded_floors or [], graded_payload,
+            closeout_inputs, figures,
+        )
     # Each arm's pins and fingerprint as its own payload recorded them, never the
     # environment this report runs in. Instrument defect 009.
     measured_on = _measured_on(payload)
@@ -1477,15 +1768,7 @@ def render_readme(
         secondary = ""
         echo_line = None
 
-    lines: list[str] = []
-    lines.append("# eval-floor")
-    lines.append("")
-    lines.append(GENERATED_BANNER)
-    lines.append("")
-    lines.append("**What score does an answer with no content in it already get?**")
-    lines.append("")
-    lines.append("## The number, and its denominator")
-    lines.append("")
+    lines: list[str] = _readme_header()
     lines.append(headline)
     if echo_line:
         lines.append("")
@@ -1500,91 +1783,13 @@ def render_readme(
     if graded_payload:
         lines.extend(render_readme_graded(graded_floors or [], graded_payload))
 
-    lines.append("## What this is")
-    lines.append("")
-    lines.append(
-        "A scorer in Inspect is a function of a completion and a target. It does not "
-        "care whether a model produced the completion. So eval-floor drives an eval's "
-        "real scorer, over its real dataset, with a battery of completions that carry "
-        "no information about the sample: the empty string, a refusal, every label "
-        "concatenated. No model is called. The sweep costs nothing and is "
-        "deterministic, which is what makes it reproducible by anyone."
-    )
-    lines.append("")
-
-    lines.append("## The case that started it")
-    lines.append("")
-    lines.append(
-        "Inspect Evals issue "
-        "[#2331](https://github.com/UKGovernmentBEIS/inspect_evals/issues/2331) was "
-        "opened on 2026-08-31 by **caiotheodoro**, who found that the constant string "
-        '`"yesno"` scores 8000 of 8000 on the `paws` eval, because the eval is scored '
-        "with `includes()` and both labels are substrings of that constant. **That "
-        "finding is theirs, not this project's.** eval-floor generalises it, asking "
-        "the same question mechanically of every task in the collection. "
-        # Dated, because "the latest release" is only ever true on a day.
-        "[#2334](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2334) by "
-        "**jkopczyn** merged 2026-09-16; the v0.21.0 release notes (2026-09-17) list "
-        "the `paws` and `boolq` fix; as of 2026-10-10 the latest release is 0.24.0. "
-        "The anchor stays on 0.20.0, where the behaviour is present. "
-        "`tests/test_paws_regression.py` reproduces it from committed code."
-    )
-    lines.append("")
-
+    lines.extend(_readme_what_this_is())
+    lines.extend(_readme_case())
     if inventory:
-        lines.append("## Reachability")
-        lines.append("")
-        lines.append(
-            "The denominator comes before the result. Every declared task is either "
-            "swept or excluded with a recorded reason; the full per-task table is in "
-            "[`results/coverage.md`](results/coverage.md)."
-        )
-        lines.append("")
-        lines.append(render_exclusion_table(inventory))
-        lines.append("")
+        lines.extend(_readme_reachability(inventory))
+    lines.extend(_readme_battery())
+    lines.extend(_readme_defects())
 
-    lines.append("## The battery")
-    lines.append("")
-    lines.append(
-        "Members are defined semantically and written down in the task's own answer "
-        "template when it declares one. Both arms, `raw` and `rendered`, are scored "
-        "and reported, so the effect of that rendering is visible rather than assumed. "
-        "The flag rule uses the rendered arm."
-    )
-    lines.append("")
-    lines.append(render_battery_table())
-    lines.append("")
-    lines.append(
-        "> **Flag rule.** A task is flagged when at least one content-free member "
-        "scores at or above that task's own `majority` baseline **and** strictly "
-        "above zero. `majority` is computed per task from the dataset, never assumed: "
-        "the PAWS test split is 55.8 per cent `No`, so its chance line is 0.558."
-    )
-    lines.append("")
-
-    lines.append("## Instrument defects found so far")
-    lines.append("")
-    lines.append(
-        "Defects are logged, not quietly fixed. What the instrument got wrong is what "
-        "tells a reader how far to trust what it now says. Full write-ups in "
-        "[`INSTRUMENT_LESSONS.md`](INSTRUMENT_LESSONS.md)."
-    )
-    lines.append("")
-    lines.append("| # | defect | what it would have invalidated |")
-    lines.append("|---|---|---|")
-    for number, defect, invalidated in INSTRUMENT_DEFECT_ROWS:
-        lines.append(f"| {number} | {defect} | {invalidated} |")
-    lines.append("")
-
-    lines.append("## Limitations")
-    lines.append("")
-    lines.append("| limitation | what it means for the number |")
-    lines.append("|---|---|")
-    lines.append(
-        "| A flagged task is not a worthless benchmark | a loose scorer inflates a "
-        "number without saying the underlying task is easy. **No claim is made about "
-        "the conclusions of any published paper** that used any of these evals. |"
-    )
     if graded_measured_on is None or graded_measured_on == measured_on:
         pinned = f"everything here is measured on {measured_on}"
     else:
@@ -1592,44 +1797,13 @@ def render_readme(
             f"the deterministic arm is measured on {measured_on}, and the "
             f"model-graded arm on {graded_measured_on}"
         )
-    lines.append(
-        f"| One version pin | {pinned}, as each arm's `sweep.json` recorded it. "
-        "Rows from different versions are never mixed; on any bump the whole sweep "
-        "re-runs. |"
+    lines.extend(
+        _readme_limitations(
+            f"| One version pin | {pinned}, as each arm's `sweep.json` recorded it. "
+            "Rows from different versions are never mixed; on any bump the whole sweep "
+            "re-runs. |"
+        )
     )
-    lines.append(
-        "| Deterministic scorers only | model-graded tasks are excluded from this "
-        "number and deferred to a separate arm with its own intervals. The exclusion "
-        "is counted, not hidden. |"
-    )
-    lines.append(
-        "| The rendering rule is a choice | writing a member in the task's answer "
-        "template changes what it scores. Both arms are published so the size of that "
-        "effect is visible, but the headline depends on which arm is preregistered. |"
-    )
-    lines.append(
-        "| Reachability is far below the collection size | most tasks need a "
-        "container, a grader model, a gated dataset or an extra dependency. The "
-        "denominator is published as prominently as the rate. |"
-    )
-    lines.append(
-        "| `echo` on multimodal tasks | where inputs are images, echoing the input "
-        "back is not well defined; such tasks are marked in the coverage file. |"
-    )
-    lines.append(
-        "| One judge, and it can be wrong | the graded arm is scored by a single "
-        "cheap model. Its id and the snapshot served are recorded in every row, and "
-        "a second grader from a different family gives a measured disagreement rate "
-        "-- which bounds the judge noise rather than removing it. |"
-    )
-    lines.append(
-        "| Per-eval grade vocabularies | graded evals answer in their own words "
-        "(ACCEPTABLE / NEITHER / COMPLIANCE and so on), and Inspect's generic "
-        "converter silently returns 0.0 for any it does not know, which understates "
-        "a floor. Mappings live in `verdict_maps.jsonl`, each quoting the eval "
-        "source line; an unmapped verdict is excluded and reported, never zeroed. |"
-    )
-    lines.append("")
 
     lines.append("## Reproducing it")
     lines.append("")
@@ -1642,31 +1816,232 @@ def render_readme(
     lines.append("evalfloor report                       # regenerates every number here")
     lines.append("```")
     lines.append("")
+    lines.append(_GENERATED_PARAGRAPH)
+    lines.append("")
+
+    lines.extend(_readme_disclosure())
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
+# The close-out README
+#
+# Rendered only from a deterministic payload that carries addendum_commit, and
+# only by `report --out results --repeat ...`. Every computed line comes from
+# closeout.py, over counts computed once in write_all; this module places them.
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class CloseoutReadme:
+    """What the close-out README reads beyond the two arms' floors and payloads."""
+
+    #: ``closeout.counts(...)``, computed once.
+    counts: closeout.CloseoutCounts
+    rules: Sequence[Ruling]
+    #: The release's own inventory, ``results/task_inventory.json``.
+    release_inventory: Sequence[dict[str, Any]]
+    #: The second run's sweep digest, from the ``--repeat`` payload.
+    repeat_digest: str | None
+    #: The tasks the two runs disagree on.
+    moved: Sequence[str]
+
+
+def _utc_date(generated_at: str | None) -> datetime.date:
+    """The day a sweep was generated, in UTC. A naive stamp is read as UTC."""
+    if not generated_at:
+        raise ValueError("the payload has no generated_at to date the close-out by")
+    stamp = datetime.datetime.fromisoformat(generated_at)
+    if stamp.tzinfo is None:
+        stamp = stamp.replace(tzinfo=datetime.timezone.utc)
+    return stamp.astimezone(datetime.timezone.utc).date()
+
+
+def _not_run_table(not_run: Sequence[tuple[str, str]]) -> list[str]:
+    if not not_run:
+        return ["Every listed task ran."]
+    by_reason: dict[str, list[str]] = {}
+    for task, reason in not_run:
+        by_reason.setdefault(reason, []).append(task)
+    lines = [
+        f"Listed and not run, {len(not_run)}, by reason:",
+        "",
+        "| reason | tasks | which |",
+        "|---|---|---|",
+    ]
+    for reason, tasks in sorted(by_reason.items(), key=lambda kv: (-len(kv[1]), kv[0])):
+        names = ", ".join(f"`{t.split('/')[-1]}`" for t in sorted(tasks))
+        lines.append(f"| {_esc(reason)[:140]} | {len(tasks)} | {names} |")
+    return lines
+
+
+def _fix_rows(floors: Sequence[TaskFloor], release: str) -> list[str]:
+    """``paws`` and ``boolq`` on the release, from their own floors."""
+    lines = [
+        f"`paws` and `boolq` on `inspect_evals` {release}, generated from this sweep:",
+        "",
+        "| task | scorer | majority | best content-free | flagged |",
+        "|---|---|---|---|---|",
+    ]
+    for task in closeout.FIX_TASKS:
+        short = task.split("/")[-1]
+        task_floors = [f for f in floors if f.task == task]
+        if not task_floors:
+            lines.append(f"| `{short}` | - | {NOT_RUN} | - | - |")
+            continue
+        for f in task_floors:
+            if f.error:
+                lines.append(f"| `{short}` | - | - | - | error: {_esc(f.error)[:60]} |")
+                continue
+            flagged = ", ".join(f.flagged_by) if f.flagged else "no"
+            lines.append(
+                f"| `{short}` | `{_esc(f.scorer)}` | {_pct(f.majority)} | "
+                f"{f.best_member or '-'} {_pct(f.best_mean)} | {flagged} |"
+            )
+    return lines
+
+
+def _venv_for(release: str) -> str:
+    """``.venv-024`` for 0.24.0: the environment the close-out recipe builds."""
+    major, minor = (release.split(".") + ["0"])[:2]
+    return f".venv-{major}{minor}"
+
+
+def _reproduce_blocks(payload: dict[str, Any], release: str) -> list[str]:
+    pins = payload.get("pins") or {}
+    venv = _venv_for(release)
+    python = f"{venv}/Scripts/python.exe"
+    cli_ = f"{venv}/Scripts/evalfloor"
+    anchor = closeout.ANCHOR_RELEASE
+    return [
+        f"The close-out, on `inspect_evals` {release}: the whole list, twice, in "
+        "separate processes. The second run goes to `results/smoke/repeat`, and "
+        "`report` compares the two task by task. (`Scripts/` is `bin/` off Windows.)",
+        "",
+        "```",
+        f"uv venv {venv} --python 3.13",
+        f"uv pip install --python {python} --no-deps -e .",
+        f"uv pip install --python {python} inspect_ai=={pins.get('inspect_ai')} "
+        f'inspect_evals=={release} "pytest>=8.0" "pytest-asyncio>=0.24"',
+        f"{cli_} sweep --closeout --out results/",
+        f"{cli_} sweep --closeout --out results/smoke/repeat",
+        f"{cli_} report --out results --repeat results/smoke/repeat/sweep.json",
+        "```",
+        "",
+        f"The {closeout.ISSUE} anchor, on `inspect_evals` {anchor}, where the "
+        "behaviour is present:",
+        "",
+        "```",
+        'uv venv && uv pip install -e ".[dev]"',
+        "pytest                                 # includes the #2331 anchor",
+        f"evalfloor check inspect_evals/paws     # exits non-zero on {anchor}",
+        "```",
+    ]
+
+
+def render_closeout_readme(
+    floors: Sequence[TaskFloor],
+    payload: dict[str, Any],
+    graded_floors: Sequence[TaskFloor],
+    graded_payload: dict[str, Any] | None,
+    inputs: CloseoutReadme,
+    figures: Sequence[FigureRef],
+) -> str:
+    """The close-out README. ``floors`` are the deterministic floors after rulings."""
+    from .rulings import not_counted
+
+    c = inputs.counts
+    fig = _figures_by_id(figures)
+    rules = list(inputs.rules)
+
+    lines: list[str] = _readme_header()
     lines.append(
-        "Every number in `results/` and in this file is generated. None is typed by "
-        "hand. Judgement calls live in `rulings.jsonl`, one row each, quoting the "
-        "source line they came from, and the report applies that file mechanically. "
-        "`evalfloor sweep` refuses to write a non-smoke result unless "
-        "`PREREGISTRATION.md` is already committed in git history, and it records that "
-        "commit hash in every file it generates."
+        f"{closeout.first_line(c, floors, rules)} {closeout.section1_sentence(c.F, c.K)}"
+    )
+    lines.append("")
+    lines.extend(render_figure(fig["F1"]))
+    lines.append("")
+    lines.append(closeout.status_line(_utc_date(payload.get("generated_at"))))
+    lines.append("")
+    echo_line = echo_headline(floors, generic=True)
+    if echo_line:
+        lines.append(echo_line)
+        lines.append("")
+
+    lines.append("## The denominator")
+    lines.append("")
+    lines.append(closeout.denominator_line(c))
+    lines.append("")
+    lines.extend(render_figure(fig["F3"]))
+    lines.append("")
+    lines.extend(_not_run_table(c.not_run))
+    lines.append("")
+    listed = not_counted(rules)
+    if listed:
+        lines.append("### Not counted")
+        lines.append("")
+        lines.append(render_treatment_table(listed))
+        lines.append("")
+    lines.append(f"### Reachability on `inspect_evals` {c.release}")
+    lines.append("")
+    lines.append(render_exclusion_table(inputs.release_inventory))
+    lines.append("")
+
+    lines.append("## Determinism")
+    lines.append("")
+    lines.append(
+        closeout.determinism_line(payload["digest"], inputs.repeat_digest, inputs.moved)
     )
     lines.append("")
 
-    lines.append("## Disclosure")
+    lines.append("## Preregistration")
     lines.append("")
     lines.append(
-        "**Built with LLM coding agents (Claude), with the author reviewing every "
-        "number's source.** The harness, the battery definitions and the tests were "
-        "written with Claude Code doing the typing under direction. The design, the "
-        "preregistration, the measurement choices and every claim made about the "
-        "results are the author's, and the anchoring result is checked in as a test "
-        "anyone can run against pinned versions rather than taken on trust."
+        closeout.preregistration_line(
+            payload.get("preregistration_commit"), payload.get("addendum_commit")
+        )
     )
     lines.append("")
-    lines.append("## Licence")
+
+    if graded_payload:
+        lines.extend(render_readme_graded(graded_floors, graded_payload))
+
+    lines.extend(_readme_what_this_is())
+    lines.extend(render_figure(fig["G1"]))
     lines.append("")
-    lines.append("MIT, (c) 2026 Ebin Babu Thomas.")
+
+    lines.extend(_readme_case())
+    lines.extend(_fix_rows(floors, c.release))
     lines.append("")
+    lines.extend(render_figure(fig["F2"]))
+    lines.append("")
+
+    lines.extend(_readme_battery())
+    lines.extend(_readme_defects())
+    pins_line = closeout.pins_line(
+        payload.get("pins") or {}, (graded_payload or {}).get("pins")
+    )
+    lines.extend(
+        _readme_limitations(
+            f"| Two arms, two pins | {pins_line} Each arm's pins and fingerprint are "
+            "the ones its own `sweep.json` recorded, and no rate mixes releases. |"
+        )
+    )
+
+    lines.append("## Reproducing it")
+    lines.append("")
+    lines.extend(_reproduce_blocks(payload, c.release))
+    lines.append("")
+    lines.extend(render_figure(fig["G2"]))
+    lines.append("")
+    lines.append(
+        _GENERATED_PARAGRAPH
+        + " `evalfloor sweep --closeout` also refuses until the close-out addendum, "
+        "section 11, is committed and on `origin/master`."
+    )
+    lines.append("")
+
+    lines.extend(_readme_disclosure())
     return "\n".join(lines)
 
 
@@ -1763,6 +2138,27 @@ def apply_repeat(
     return moved
 
 
+def prepare_floors(
+    payload: dict[str, Any],
+    rules: Sequence[Ruling],
+    repeat: dict[str, Any] | None = None,
+) -> tuple[list[TaskFloor], list[TaskFloor], list[AppliedRuling], list[Ruling], list[str]]:
+    """``(before, after, applied, unmatched, moved)`` for one payload.
+
+    The one place floors are rebuilt, marked against a second run and ruled on,
+    so every file and every console line reads the same floors. ``moved`` is
+    the tasks the two runs disagree on, marked before rulings so they leave the
+    before rate too; it is empty without ``repeat``. Everything downstream of
+    the matrix -- the README and its figures -- reads ``after`` only.
+    """
+    from .rulings import apply_rulings
+
+    before = floors_from_payload(payload)
+    moved = apply_repeat(before, payload, repeat) if repeat is not None else []
+    after, applied, unmatched = apply_rulings(before, list(rules))
+    return before, after, applied, unmatched, moved
+
+
 def readme_is_written_here(
     payload: dict[str, Any], arms: dict[str, Any], repeat: dict[str, Any] | None
 ) -> bool:
@@ -1785,21 +2181,23 @@ def write_all(
     inventory: Sequence[dict[str, Any]] | None = None,
     readme_path: pathlib.Path | None = None,
     repeat: dict[str, Any] | None = None,
+    figure_provider: FigureProvider | None = None,
 ) -> list[pathlib.Path]:
     """Regenerate every markdown artifact from a sweep payload. Returns paths.
 
     ``repeat`` is a second run's payload. Tasks the two runs disagree on are
     "not run: non-deterministic" in everything written here.
+
+    ``figure_provider`` builds the close-out README's figures. Without one, a
+    close-out README refuses to render: it never goes out with holes in it.
     """
-    from .rulings import apply_rulings, load_rulings, not_counted
+    from .rulings import load_rulings, not_counted
 
     out_dir.mkdir(parents=True, exist_ok=True)
-    floors_before = floors_from_payload(payload)
-    if repeat is not None:
-        # Before rulings, so a moved task is out of the before rate too.
-        apply_repeat(floors_before, payload, repeat)
     rules = load_rulings(rulings_path)
-    floors_after, applied, unmatched = apply_rulings(floors_before, rules)
+    floors_before, floors_after, applied, unmatched, moved = prepare_floors(
+        payload, rules, repeat
+    )
     digest = payload.get("digest")
     # The not_counted rows shape the deterministic list only. The graded arm's
     # files never mention them, so they stay byte-identical when the rows land.
@@ -1832,6 +2230,30 @@ def write_all(
 
     arms = readme_arms(payload, floors_after, out_dir, rules) if readme_path else {}
     if readme_path is not None and readme_is_written_here(payload, arms, repeat):
+        inputs: CloseoutReadme | None = None
+        figures: list[FigureRef] | None = None
+        if arms["payload"].get("addendum_commit"):
+            # Only the deterministic arm, with its second run, gets here.
+            root = results_root(out_dir)
+            release_inventory = _required_inventory(root / "task_inventory.json")
+            anchor_inventory = _required_inventory(root / "graded" / "task_inventory.json")
+            counts = closeout.counts(
+                floors_after, payload, rules, release_inventory, anchor_inventory,
+                nondeterministic=moved,
+            )
+            inputs = CloseoutReadme(
+                counts=counts,
+                rules=rules,
+                release_inventory=release_inventory,
+                repeat_digest=(repeat or {}).get("digest"),
+                moved=tuple(moved),
+            )
+            if figure_provider is not None:
+                figures = list(
+                    figure_provider(
+                        payload=payload, floors=floors_after, counts=counts, repeat=repeat
+                    )
+                )
         readme_path.write_text(
             render_readme(
                 arms["floors"],
@@ -1839,9 +2261,22 @@ def write_all(
                 arms["payload"],
                 graded_floors=arms["graded_floors"],
                 graded_payload=arms["graded_payload"],
+                closeout_inputs=inputs,
+                figures=figures,
             ),
             encoding="utf-8",
         )
         written.append(readme_path)
 
     return written
+
+
+def _required_inventory(path: pathlib.Path) -> list[dict[str, Any]]:
+    """An inventory the close-out README cannot do without. Never a fallback:
+    the anchor's 58 reachable are 0.20.0's, and the release's are its own."""
+    if not path.exists():
+        raise FileNotFoundError(
+            f"the close-out README needs {path}; it is never replaced by another "
+            "release's inventory"
+        )
+    return json.loads(path.read_text(encoding="utf-8"))

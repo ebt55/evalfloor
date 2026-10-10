@@ -775,3 +775,360 @@ def test_a_smoke_payload_never_reaches_the_readme_through_the_other_arm(
     arms = readme_arms(_payload(det_floors), det_floors, results, [])
     assert arms["graded_payload"] is None
     assert arms["graded_floors"] == []
+
+
+# --------------------------------------------------------------------------
+# 10. The close-out README
+#
+# The first-sweep README must not move while the close-out code lands beside
+# it, and the close-out README renders only from closeout.py's computed lines.
+# --------------------------------------------------------------------------
+
+#: The commit whose README.md the first-sweep render is pinned against.
+README_PINNED_AT = "0713e6d"
+
+
+def _root():
+    import pathlib
+
+    return pathlib.Path(__file__).resolve().parent.parent
+
+
+def _git_show(rev_path: str) -> str:
+    import subprocess
+
+    proc = subprocess.run(
+        ["git", "show", rev_path], cwd=str(_root()), capture_output=True, text=True,
+        encoding="utf-8",
+    )
+    if proc.returncode != 0:
+        pytest.skip(f"{rev_path} is not in this clone's history")
+    return proc.stdout
+
+
+def test_the_first_sweep_readme_is_unchanged_but_for_polarity_and_011() -> None:
+    """The committed 0.20.0 payloads carry no addendum_commit, so they still get
+    the first-sweep README: byte for byte the one committed at 0713e6d, plus the
+    graded polarity sentence and the row for defect 011."""
+    import json
+
+    from evalfloor.report import INSTRUMENT_DEFECT_ROWS, prepare_floors, render_readme
+    from evalfloor.rulings import load_rulings
+
+    rules = load_rulings(_root() / "rulings.jsonl")
+    det = json.loads(_git_show(f"{README_PINNED_AT}:results/sweep.json"))
+    graded = json.loads(_git_show(f"{README_PINNED_AT}:results/graded/sweep.json"))
+    inventory = json.loads(_git_show(f"{README_PINNED_AT}:results/task_inventory.json"))
+    assert "addendum_commit" not in det
+    _, det_after, _, _, _ = prepare_floors(det, rules)
+    _, graded_after, _, _, _ = prepare_floors(graded, rules)
+    rendered = render_readme(
+        det_after, inventory, det, graded_floors=graded_after, graded_payload=graded
+    )
+
+    pinned = _git_show(f"{README_PINNED_AT}:README.md").replace("\r\n", "\n")
+    verdict = (
+        "3 of 7 flagged at the Wilson lower bound; the arm's preregistered negative "
+        "result (fewer than three) does not hold."
+    )
+    number, defect, invalidated = next(r for r in INSTRUMENT_DEFECT_ROWS if r[0] == "011")
+    row_010 = next(line for line in pinned.splitlines() if line.startswith("| 010 |"))
+    expected = pinned.replace(
+        verdict + "\n",
+        verdict + " All 3 flags are on tasks whose high score is the bad outcome.\n",
+    ).replace(row_010 + "\n", f"{row_010}\n| {number} | {defect} | {invalidated} |\n")
+    assert expected != pinned, "both edits must land"
+    assert rendered == expected
+
+
+def _cf(name: str, mean: float, n: int = 100) -> object:
+    from evalfloor.aggregate import MemberScore
+
+    return MemberScore(
+        member=name, mean=mean, n_correct=round(mean * n), n_scored=n, applicable=True
+    )
+
+
+def _closeout_floor(task: str, majority: float, best: str, mean: float, **over):
+    from evalfloor.aggregate import TaskFloor
+
+    floor = TaskFloor(
+        task=task, scorer="inspect_ai/choice", n_samples=100, sampled=False,
+        majority_label="A", majority=majority, best_member=best, best_mean=mean,
+        gap_to_majority=mean - majority,
+        members={best: _cf(best, mean), "majority": _cf("majority", majority)},
+    )
+    for key, value in over.items():
+        setattr(floor, key, value)
+    return floor
+
+
+def _closeout_fixture(tmp_path, *, clean: bool):
+    """A close-out payload on disk, its second run, rulings and both inventories.
+
+    ``clean``: every task ran, none is flagged, both runs agree, nothing is left
+    off the list. Otherwise: a tie, a real flag with a note ruling, an error, a
+    non-deterministic task and a reachable task not on the list.
+    """
+    import json
+    import shutil
+
+    from evalfloor.report import write_sweep
+
+    floors = [
+        _closeout_floor("inspect_evals/paws", 0.558, "echo", 0.121),
+        _closeout_floor("inspect_evals/boolq", 0.622, "echo", 0.0),
+    ]
+    if clean:
+        floors.append(_closeout_floor("inspect_evals/gsm8k", 0.03, "echo", 0.02))
+    else:
+        floors += [
+            _closeout_floor(
+                "inspect_evals/sec_qa_v2", 0.31, "format_only", 0.31,
+                flagged=True, flagged_by=["format_only"], collision=True,
+                collision_note="the placeholder is the modal answer",
+            ),
+            _closeout_floor(
+                "inspect_evals/gsm8k", 0.03, "echo", 0.2,
+                flagged=True, flagged_by=["echo"],
+            ),
+            _closeout_floor("inspect_evals/drop", 0.07, "empty", 0.0, error="load_error: boom"),
+            _closeout_floor("inspect_evals/musr", 0.34, "empty", 0.1),
+        ]
+    tasks = [f.task for f in floors]
+    digests = {t: f"{i:064x}" for i, t in enumerate(tasks)}
+    payload = {
+        "arm": "deterministic", "schema": 2, "closeout": True, "smoke": False,
+        "pins": {"inspect_ai": "0.3.263", "inspect_evals": "0.24.0"},
+        "battery_fingerprint": "b019ebb6ecee", "run_fingerprint": "41402ad0d866",
+        "shuffle_seed": 42, "tasks": tasks, "digest": "d" * 64,
+        "task_digests": digests,
+        "preregistration_commit": "912345f8d5be" + "0" * 28,
+        "addendum_commit": "a11a11a11a11" + "0" * 28,
+        # 23:30 at UTC-2 is the next day in UTC: the README dates by UTC.
+        "generated_at": "2026-10-13T23:30:00-02:00" if not clean else "2026-10-13T08:00:00",
+        "runs": [], "floors": [f.to_dict() for f in floors],
+    }
+    repeat = dict(payload)
+    if not clean:
+        repeat["task_digests"] = dict(digests, **{"inspect_evals/musr": "f" * 64})
+        repeat["digest"] = "e" * 64
+
+    results = tmp_path / "results"
+    write_sweep(payload, results / "sweep.json")
+    root = _root()
+    (results / "graded").mkdir(parents=True)
+    shutil.copy(root / "results" / "graded" / "sweep.json", results / "graded" / "sweep.json")
+
+    def row(name, reachable=True):
+        return {
+            "name": name, "reachable": reachable, "scorer_expr": "choice()",
+            "scorer_class": "deterministic",
+            "exclusion_reason": "" if reachable else "sandbox_required",
+            "exclusion_detail": "",
+        }
+
+    release = [row(t) for t in tasks] + [row("inspect_evals/needs_a_box", False)]
+    rulings = ""
+    if not clean:
+        release += [row("inspect_evals/new_on_024"), row("inspect_evals/tau2_airline")]
+        rulings = (
+            json.dumps({
+                "task": "inspect_evals/gsm8k", "action": "note",
+                "reason": "fixture", "source": "gsm8k.py:12 the answer is in the question",
+            }) + "\n"
+            + json.dumps({
+                "task": "inspect_evals/tau2_airline", "action": "not_counted",
+                "treatment": "needs solver state", "reason": "fixture",
+                "source": "inspect_evals 0.20.0, src/inspect_evals/tau2/x.py:1",
+            }) + "\n"
+        )
+    (results / "task_inventory.json").write_text(json.dumps(release), encoding="utf-8")
+    anchor = [row(t) for t in tasks] + [row("inspect_evals/tau2_airline")]
+    (results / "graded" / "task_inventory.json").write_text(json.dumps(anchor), encoding="utf-8")
+    rulings_path = tmp_path / "rulings.jsonl"
+    rulings_path.write_text(rulings, encoding="utf-8")
+    return payload, repeat, results, rulings_path, release
+
+
+def _fake_figures(calls: list):
+    from evalfloor.report import README_FIGURES, FigureRef
+
+    def provider(**kwargs):
+        calls.append(kwargs)
+        return [
+            FigureRef(
+                id=i, alt=f"alt {i} \"quoted\"", caption=f"Caption {i}.",
+                data_digest=f"{i.lower()}" * 4, light_svg=f"docs/figures/{i}.light.svg",
+                dark_svg=f"docs/figures/{i}.dark.svg", table_md=f"| {i} |\n|---|",
+                gif=f"docs/figures/{i}.gif" if i.startswith("G") else None,
+                transcript="$ evalfloor sweep --closeout" if i == "G2" else None,
+            )
+            for i in README_FIGURES
+        ]
+
+    return provider
+
+
+def _between(text: str, start: str, end: str) -> str:
+    return text.split(start, 1)[1].split(end, 1)[0]
+
+
+def test_the_closeout_readme_renders_every_branch(tmp_path) -> None:
+    from evalfloor import closeout
+    from evalfloor.report import write_all
+
+    payload, repeat, results, rulings, release = _closeout_fixture(tmp_path, clean=False)
+    readme = tmp_path / "README.md"
+    calls: list = []
+    write_all(
+        payload, results, rulings, inventory=release, readme_path=readme,
+        repeat=repeat, figure_provider=_fake_figures(calls),
+    )
+    text = readme.read_text(encoding="utf-8")
+
+    # The counts were computed once and handed to the figures as well.
+    assert len(calls) == 1
+    c = calls[0]["counts"]
+    assert (c.N, c.C, c.F, c.K) == (4, 6, 2, 1)
+    assert c.X == ("inspect_evals/new_on_024",)
+    assert dict(c.not_run) == {
+        "inspect_evals/drop": "load_error: boom",
+        "inspect_evals/musr": closeout.NON_DETERMINISTIC,
+    }
+
+    first = text.split("## The number, and its denominator\n\n", 1)[1].split("\n", 1)[0]
+    assert first.startswith("I fed eight answers with no content to the real scorers of 4 ")
+    assert "1 reached its majority baseline other than by construction" in first
+    assert "because gsm8k.py:12 the answer is in the question" in first
+    assert "On 1 more, the placeholder answer is the modal answer" in first
+    assert first.endswith("Preregistered negative result.")
+    assert "Status: closed 2026-10-14; no further sweeps." in text
+    assert "The most is on `gsm8k`: **20 of 100** samples score as correct" in text
+    assert "already contain a label" not in text
+
+    denominator = _between(text, "## The denominator", "## Determinism")
+    assert "4 of 6 countable on 0.24.0" in denominator
+    assert "`inspect_evals/new_on_024`" in denominator
+    assert f"| {closeout.NON_DETERMINISTIC} | 1 | `musr` |" in denominator
+    assert "| load_error: boom | 1 | `drop` |" in denominator
+    assert "| needs solver state | 1 | `tau2_airline` |" in denominator
+    assert "### Reachability on `inspect_evals` 0.24.0" in denominator
+
+    determinism = _between(text, "## Determinism", "## Preregistration")
+    assert "digests `dddddddddddddddd` and `eeeeeeeeeeeeeeee`" in determinism
+    assert "`inspect_evals/musr`" in determinism
+    prereg = _between(text, "## Preregistration", "## The model-graded arm")
+    assert "`912345f8d5be`" in prereg and "`a11a11a11a11`" in prereg
+
+    graded = _between(text, "## The model-graded arm", "## What this is")
+    assert "does not hold. All 3 flags are on tasks whose high score is the bad outcome." in graded
+
+    case = _between(text, "## The case that started it", "## The battery")
+    assert "merged 2026-09-16" in case
+    assert "`paws` and `boolq` on `inspect_evals` 0.24.0, generated from this sweep" in case
+    assert "| `paws` | `inspect_ai/choice` | 55.8% | echo 12.1% | no |" in case
+    assert "| `boolq` | `inspect_ai/choice` | 62.2% | echo 0.0% | no |" in case
+
+    assert "| 011 | the flag rule assumed every task's score points the same way |" in text
+    assert (
+        "| Two arms, two pins | Deterministic arm: `inspect_evals` 0.24.0. Graded arm: "
+        "0.20.0, not re-run. Arms are never added." in text
+    )
+    assert "One version pin" not in text
+
+    reproduce = _between(text, "## Reproducing it", "## Disclosure")
+    assert "uv venv .venv-024 --python 3.13" in reproduce
+    assert "inspect_ai==0.3.263 inspect_evals==0.24.0" in reproduce
+    assert ".venv-024/Scripts/evalfloor sweep --closeout --out results/\n" in reproduce
+    assert ".venv-024/Scripts/evalfloor sweep --closeout --out results/smoke/repeat" in reproduce
+    assert "report --out results --repeat results/smoke/repeat/sweep.json" in reproduce
+    assert "evalfloor check inspect_evals/paws     # exits non-zero on 0.20.0" in reproduce
+    assert "--first-sweep" not in text
+
+    # Each figure in its place, once.
+    for fig, (start, end) in {
+        "F1": ("## The number, and its denominator", "Status: closed"),
+        "F3": ("## The denominator", "Listed and not run"),
+        "G1": ("## What this is", "## The case that started it"),
+        "F2": ("## The case that started it", "## The battery"),
+        "G2": ("## Reproducing it", "## Disclosure"),
+    }.items():
+        assert text.count(f"<!-- figure {fig} data sha256:") == 1, fig
+        assert f"<!-- figure {fig} data sha256:" in _between(text, start, end), fig
+    assert "<summary>Transcript</summary>" in reproduce
+
+    for word in ("planned", "WIP", "not merged", "in flight"):
+        assert word not in text, word
+
+
+def test_the_closeout_readme_on_a_clean_sweep(tmp_path) -> None:
+    from evalfloor.report import write_all
+
+    payload, repeat, results, rulings, release = _closeout_fixture(tmp_path, clean=True)
+    readme = tmp_path / "README.md"
+    write_all(
+        payload, results, rulings, inventory=release, readme_path=readme,
+        repeat=repeat, figure_provider=_fake_figures([]),
+    )
+    text = readme.read_text(encoding="utf-8")
+    first = text.split("## The number, and its denominator\n\n", 1)[1].split("\n", 1)[0]
+    assert "None reached its majority baseline." in first
+    assert "this sweep confirms the fix" in first
+    assert "Status: closed 2026-10-13; no further sweeps." in text, "a naive stamp is UTC"
+    assert "Every listed task ran." in text
+    assert "no reachable task is left off the list." in text
+    assert "### Not counted" not in text
+    assert "digest `dddddddddddddddd` both times" in text
+
+
+def test_the_closeout_readme_refuses_without_figures_or_the_anchor_inventory(
+    tmp_path,
+) -> None:
+    from evalfloor.report import FigureRef, render_figure, write_all
+
+    payload, repeat, results, rulings, release = _closeout_fixture(tmp_path, clean=True)
+    readme = tmp_path / "README.md"
+
+    with pytest.raises(ValueError, match="needs its figures"):
+        write_all(payload, results, rulings, inventory=release, readme_path=readme,
+                  repeat=repeat)
+    assert not readme.exists()
+
+    def without(fig_id):
+        def provider(**kwargs):
+            return [f for f in _fake_figures([])(**kwargs) if f.id != fig_id]
+        return provider
+
+    with pytest.raises(ValueError, match="missing"):
+        write_all(payload, results, rulings, inventory=release, readme_path=readme,
+                  repeat=repeat, figure_provider=without("F2"))
+
+    # The anchor's inventory is 0.20.0's, and nothing stands in for it.
+    (results / "graded" / "task_inventory.json").unlink()
+    with pytest.raises(FileNotFoundError, match="graded"):
+        write_all(payload, results, rulings, inventory=release, readme_path=readme,
+                  repeat=repeat, figure_provider=_fake_figures([]))
+
+    # One figure, exactly as GitHub needs it: dark and light SVG, the caption,
+    # the data digest as a comment, and the data under a fold.
+    fig = FigureRef(
+        id="F1", alt='a "chart"', caption="The caption.", data_digest="abc123",
+        light_svg="docs/figures/F1.light.svg", dark_svg="docs/figures/F1.dark.svg",
+        table_md="| a |\n|---|\n| 1 |",
+    )
+    assert render_figure(fig) == [
+        '<picture><source media="(prefers-color-scheme: dark)" '
+        'srcset="docs/figures/F1.dark.svg"><img src="docs/figures/F1.light.svg" '
+        'alt="a &quot;chart&quot;"></picture>',
+        "",
+        "The caption.",
+        "",
+        "<!-- figure F1 data sha256:abc123 -->",
+        "",
+        "<details><summary>Data</summary>",
+        "",
+        "| a |\n|---|\n| 1 |",
+        "",
+        "</details>",
+    ]
