@@ -16,9 +16,11 @@ import pytest
 from evalfloor.aggregate import MemberScore, TaskFloor, aggregate_run, collision_count, flag_rate
 from evalfloor.battery import CONTENT_FREE_NAMES
 from evalfloor.closeout import (
+    LIST_FIXED_AT,
     NON_DETERMINISTIC,
     CloseoutCounts,
     counts,
+    representative_floor,
     denominator_line,
     determinism_line,
     first_line,
@@ -51,6 +53,7 @@ def _floor(
     task: str,
     *,
     flag: str | None = None,
+    best_member: str | None = None,
     mean: float = 0.0,
     majority: float = 0.25,
     collision: bool = False,
@@ -58,11 +61,13 @@ def _floor(
     nothing_scored: bool = False,
 ) -> TaskFloor:
     """A floor shaped the way aggregate_run leaves one: every content-free
-    member present, ``flagged_by`` naming the members that reach ``majority``."""
+    member present, ``flagged_by`` naming the members that reach ``majority``,
+    and ``gap_to_majority`` the best content-free mean minus ``majority``."""
     members = {name: _score(name, 0.0) for name in CONTENT_FREE_NAMES}
     members["majority"] = _score("majority", majority)
-    if flag:
-        members[flag] = _score(flag, mean)
+    best = flag or best_member
+    if best:
+        members[best] = _score(best, mean)
     return TaskFloor(
         task=task,
         scorer=scorer,
@@ -71,6 +76,9 @@ def _floor(
         majority_label="A",
         majority=majority,
         members=members,
+        best_member=best or CONTENT_FREE_NAMES[0],
+        best_mean=mean,
+        gap_to_majority=mean - majority,
         flagged=bool(flag),
         flagged_by=[flag] if flag else [],
         collision=collision,
@@ -214,6 +222,150 @@ def test_counts_matches_aggregate_on_the_fixture_tasks() -> None:
 def test_counts_refuses_a_payload_it_cannot_count(payload: dict) -> None:
     with pytest.raises(ValueError):
         counts(_clean_fix(), payload, [], [], [])
+
+
+def test_the_list_was_fixed_against_the_58_reachable_at_list_fixed_at() -> None:
+    """``counts`` takes the 0.20.0 inventory as an argument and reads no git;
+    the constant says where a caller gets it, and this test gets it there."""
+    import json
+    import pathlib
+    import subprocess
+
+    assert LIST_FIXED_AT == "316f142"
+    proc = subprocess.run(
+        ["git", "show", f"{LIST_FIXED_AT}:results/task_inventory.json"],
+        cwd=str(pathlib.Path(__file__).resolve().parent.parent),
+        capture_output=True, text=True, encoding="utf-8",
+    )
+    if proc.returncode != 0:
+        pytest.skip(f"{LIST_FIXED_AT} is not in this clone's history")
+    anchor = json.loads(proc.stdout)
+    c = _counts(_clean_fix(), [PAWS, BOOLQ], anchor=anchor)
+    assert c.R0 == 58
+    assert len(anchor) == 237
+
+
+# --------------------------------------------------------------------------
+# representative_floor
+# --------------------------------------------------------------------------
+
+TASK = "inspect_evals/multi"
+
+
+def _pick(*floors: TaskFloor) -> TaskFloor:
+    """The chosen floor, which must not depend on the order floors arrive in."""
+    import itertools
+
+    picks = {id(representative_floor(list(p))) for p in itertools.permutations(floors)}
+    assert len(picks) == 1, "the choice moved with the input order"
+    return representative_floor(list(floors))
+
+
+def test_a_real_flag_stands_for_the_task_before_a_tie_or_a_bigger_gap() -> None:
+    real = _floor(TASK, flag="echo", mean=0.3, majority=0.3, scorer="s/c")
+    tie = _floor(TASK, flag="format_only", mean=0.9, majority=0.9, collision=True, scorer="s/a")
+    errored = _errored(TASK, "boom")
+    assert _pick(real, tie, errored) is real
+
+
+def test_a_tie_stands_before_an_unflagged_floor() -> None:
+    tie = _floor(TASK, flag="format_only", mean=0.25, collision=True, scorer="s/z")
+    close = _floor(TASK, best_member="echo", mean=0.24, majority=0.25, scorer="s/a")
+    assert _pick(tie, close) is tie
+
+
+def test_unflagged_floors_go_by_the_largest_gap_then_scorer_name() -> None:
+    far = _floor(TASK, best_member="echo", mean=0.0, majority=0.5, scorer="s/a")
+    near = _floor(TASK, best_member="echo", mean=0.4, majority=0.5, scorer="s/b")
+    assert _pick(far, near) is near
+    level = _floor(TASK, best_member="echo", mean=0.4, majority=0.5, scorer="s/a")
+    assert _pick(near, level) is level
+
+
+def test_flags_of_one_class_go_by_scorer_name() -> None:
+    b = _floor(TASK, flag="echo", mean=0.9, majority=0.5, scorer="s/b")
+    a = _floor(TASK, flag="refusal", mean=0.6, majority=0.5, scorer="s/a")
+    assert _pick(a, b) is a
+    tie_b = _floor(TASK, flag="format_only", mean=0.5, majority=0.5, collision=True, scorer="s/b")
+    tie_a = _floor(TASK, flag="format_only", mean=0.5, majority=0.5, collision=True, scorer="s/a")
+    assert _pick(tie_a, tie_b) is tie_a
+
+
+def test_a_scored_floor_stands_before_an_errored_or_silent_one() -> None:
+    """An errored floor's gap defaults to 0.0, above any real negative gap, so
+    the scored class has to come first or the error would win."""
+    scored = _floor(TASK, best_member="echo", mean=0.0, majority=0.5, scorer="s/z")
+    errored = _errored(TASK, "boom")
+    silent = _floor(TASK, nothing_scored=True, scorer="s/a")
+    assert _pick(scored, errored, silent) is scored
+    assert _pick(errored, silent).scorer == "-"
+
+
+def test_representative_floor_refuses_nothing_and_mixed_tasks() -> None:
+    with pytest.raises(ValueError):
+        representative_floor([])
+    with pytest.raises(ValueError):
+        representative_floor([_floor("a/one"), _floor("a/two")])
+
+
+def _every_kind_of_single_floor() -> list[TaskFloor]:
+    """One floor per task, of every kind a sweep can leave after rulings."""
+    flagged_then_not_counted = _floor("k/not_counted", flag="echo", mean=0.9)
+    flagged_then_not_counted.error = "not counted: needs a judge"  # what apply_rulings does
+    return [
+        *_clean_fix(),
+        _floor("k/clean", best_member="echo", mean=0.1),
+        _floor("k/real", flag="all_labels", mean=1.0, majority=0.558),
+        _floor("k/real_at_the_line", flag="refusal", mean=0.3, majority=0.3),
+        _tie("k/tie"),
+        _errored("k/errored", "dataset load failed: OSError"),
+        _floor("k/silent", nothing_scored=True),
+        flagged_then_not_counted,
+        _floor("k/unflagged", best_member="echo", mean=0.9, majority=0.5),
+    ]
+
+
+def test_a_single_floor_is_its_own_representative() -> None:
+    for floor in _every_kind_of_single_floor():
+        assert representative_floor([floor]) is floor
+
+
+def test_single_scorer_counts_are_what_aggregate_counts() -> None:
+    """``representative_floor`` changes nothing for a one-scorer task: N, F and
+    K are exactly ``aggregate.flag_rate`` and ``collision_count``, and each
+    task lands where the per-floor rule puts it."""
+    floors = _every_kind_of_single_floor()
+    c = _counts(floors, [f.task for f in floors])
+
+    assert (c.F, c.N) == flag_rate(floors)
+    assert c.K == collision_count(floors)
+    assert c.ran == tuple(sorted(f.task for f in floors if f.error is None and not f.nothing_scored))
+    assert c.flagged == tuple(sorted(f.task for f in floors if f.error is None and f.flagged))
+    assert c.ties == tuple(
+        sorted(f.task for f in floors if f.error is None and f.flagged and f.collision)
+    )
+    assert dict(c.not_run) == {
+        "k/errored": "dataset load failed: OSError",
+        "k/silent": "nothing scored",
+        "k/not_counted": "not counted: needs a judge",
+    }
+    assert (c.N, c.F, c.K, c.real) == (7, 3, 1, 2)
+
+
+def test_counts_counts_each_task_on_its_representative_floor() -> None:
+    tasks = [PAWS, BOOLQ, "t/tie_and_clean", "t/error_and_scored", "t/all_errored"]
+    floors = [
+        *_clean_fix(),
+        _tie("t/tie_and_clean"),
+        _floor("t/tie_and_clean", scorer="inspect_ai/match"),
+        _errored("t/error_and_scored", "one scorer failed"),
+        _floor("t/error_and_scored", scorer="inspect_ai/match"),
+        _errored("t/all_errored", "both failed"),
+    ]
+    c = _counts(floors, tasks)
+    assert c.ties == ("t/tie_and_clean",)
+    assert "t/error_and_scored" in c.ran
+    assert dict(c.not_run) == {"t/all_errored": "both failed"}
 
 
 # --------------------------------------------------------------------------
