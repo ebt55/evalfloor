@@ -900,3 +900,128 @@ section 11.
   (`drive.seeded_shuffles`, seed 42, upstream's).
 * **The latest PyPI release is still 0.24.0**, checked at 2026-10-10 14:01 UTC.
   The pin is not moved.
+
+### 0.24.0 close-out sweep: the one non-tie flag (bbh), triaged
+
+**Run facts.**
+* Section 11 (`27cdc33`) was pushed to `master` at **2026-10-10T14:15:43Z**. That time
+  comes from GitHub's activity API (`push refs/heads/master 36be3aef7..27cdc3393`,
+  ebt55), the only server-side timestamp. The first sweep's gate printed
+  "close-out addendum committed at 27cdc33933db and on origin/master" before it
+  swept anything.
+* The list was swept twice, in separate processes, on `inspect_evals` 0.24.0 /
+  `inspect_ai` 0.3.263, with shuffle seed 42 and run fingerprint `e498a3949683`
+  (battery `b019ebb6ecee`):
+  * `results/sweep.json`, written 14:38:34Z;
+  * `results/smoke/repeat/sweep.json`, written 14:55:23Z.
+* Both runs give digest **`7981d9ebdb69df63`**
+  (`7981d9eb...c3b445`), and all 45 per-task digests are equal.
+* `logs/env-024-before.txt` and `logs/env-024-after.txt` are identical, so the
+  environment did not change between the runs.
+* **11 of 45 flagged; 10 are collision ties.** Each of the ten has `format_only` as its
+  only flagging member, scored on the same string as `majority` (`ANSWER: A`).
+  They are `lab_bench_{dbqa, litqa, seqqa, tableqa}`, `mmlu_pro`, `musr`,
+  `pubmedqa`, `truthfulqa`, `vstar_bench_attribute_recognition` and
+  `wmdp_cyber`.
+* `paws` and `boolq` are unflagged, with no error and every content-free member at
+  0.0%, against majority lines of 55.8% and 62.2%.
+
+**The flag.** The one non-tie flag is `bbh`:
+* `echo` scores 1702/6508 = **26.15%** against `majority` (`B`) at 1030/6508 = **15.83%**.
+* `flagged_by` is `["echo"]`, with no collision. The raw arm flags too: raw `majority` is 0, because a bare `B` is unreadable on
+  multiple choice.
+* For comparison, `format_only` scores 969, the share of multiple-choice targets that are `A`.
+* One of the 6509 samples is unscored in every arm, in both runs. It is a
+  movie_recommendation row whose target is not an option letter, and `choice()`
+  raises "target references answer(s) beyond the task's 5 choices".
+
+**Class: task property.** Lines are `inspect_evals` 0.24.0 and `inspect_ai` 0.3.263.
+* **The input carries answered examples.** `bbh()` defaults to all 27 subsets with
+  `prompt_type="answer_only"` (`bbh.py:67, 88-90`). It prepends each subset's few-shot
+  prompt to every input (`bbh.py:98-108`), and every example in that prompt ends in an
+  `ANSWER: <label>` line.
+* **`echo` returns the whole input** (`battery.py:343-344`).
+* **The scorers read the last `ANSWER:` anywhere in a completion:**
+  * multiple choice: `parse_answers` falls back to an unanchored pattern
+    (`solver/_multiple_choice.py:106-110`) and keeps `matches[-1]` (`:115`);
+  * binary: `answer("word")` matches the last `ANSWER:` by design (`_util/pattern.py:1-8`).
+* **So echo is a constant guess.** It answers every sample of a subset with that subset's last example label.
+* **It is not a scorer defect.** A constant `ANSWER: <label>` earns exactly what echo earns.
+* **It is not an instrument fault.** Every sample reached its own scorer branch, its metadata
+  survived `build_state` (`drive.py:426`), and `majority` is rendered as
+  preregistered (`battery.py:235-238`).
+
+**Per subset**, driven once on `.venv-024` through the harness's own load path.
+"Own modal" is the subset's most common target written `ANSWER: <label>`, i.e. the
+best constant answer for that subset. Totals equal the sweep's.
+
+| subset | n | echo | majority | own modal | echo vs own |
+|---|---|---|---|---|---|
+| boolean_expressions | 250 | 135 | 0 | 135 | tie |
+| causal_judgement | 187 | 97 | 0 | 97 | tie |
+| date_understanding | 250 | 50 | 50 | 50 | tie |
+| disambiguation_qa | 250 | 75 | 97 | 97 | below |
+| dyck_languages | 250 | 0 | 0 | (250) | excluded, #2488 |
+| formal_fallacies | 250 | 117 | 0 | 133 | below |
+| geometric_shapes | 250 | 21 | 23 | 50 | below |
+| hyperbaton | 250 | 129 | 129 | 129 | tie |
+| logical_deduction_five_objects | 250 | 46 | 49 | 56 | below |
+| logical_deduction_seven_objects | 250 | 38 | 38 | 38 | tie |
+| logical_deduction_three_objects | 250 | 84 | 86 | 86 | below |
+| movie_recommendation | 249 | 63 | 53 | 69 | below |
+| multistep_arithmetic_two | 250 | 7 | 0 | 7 | tie |
+| navigate | 250 | 105 | 0 | 145 | below |
+| object_counting | 250 | 0 | 0 | 26 | below |
+| penguins_in_a_table | 146 | 35 | 30 | 35 | tie |
+| reasoning_about_colored_objects | 250 | 43 | 39 | 43 | tie |
+| ruin_names | 248 | 56 | 56 | 71 | below |
+| salient_translation_error_detection | 250 | 30 | 55 | 56 | below |
+| snarks | 178 | 82 | 96 | 96 | below |
+| sports_understanding | 250 | 115 | 0 | 135 | below |
+| temporal_sequences | 250 | 65 | 50 | 71 | below |
+| tracking_shuffled_objects_five_objects | 250 | 52 | 54 | 54 | below |
+| tracking_shuffled_objects_seven_objects | 250 | 38 | 37 | 39 | below |
+| tracking_shuffled_objects_three_objects | 250 | 83 | 88 | 88 | below |
+| web_of_lies | 250 | 128 | 0 | 128 | tie |
+| word_sorting | 250 | 8 | 0 | 1 | above |
+| **all 27 (scored)** | 6508 | 1702 | 1030 | | |
+
+* **dyck is excluded from the comparison** because, under #2488, any `ANSWER:` constant scores 250/250 there.
+* **On the other 26 subsets**, echo ties the subset's own most common answer on 9 and is below it on 16.
+  Overall, echo is 27.2% against 30.9% for the own-modal constants.
+* **The one exception is word_sorting.** In all 8 of its echo credits, the input lists 2 or 3 words
+  already in sorted order, so the echoed input ends with the target. That is the answer in the
+  input, the plainest case of a task property.
+* **multistep_arithmetic_two's 7 credits** are #2488's sign-and-suffix matching: the last
+  operand's digits equal the target's digits once the sign is stripped.
+* **Where the margin over majority comes from.** Of echo's 672-sample lead:
+  * the six binary subsets give +697, where `B` is no answer;
+  * multiple choice gives −40;
+  * exact match gives +15.
+
+**Caveat: a weak single-label baseline.**
+* On a task that mixes 27 label vocabularies, the dataset-wide modal target is a weak chance
+  line. `B` can score only on the 4,072 multiple-choice samples.
+* Even the right label, written bare, would score 0 on the binary and exact-match subsets.
+  Those require an `ANSWER:` prefix that the task declares only in prose
+  (`bbh.py:382`), and the preregistered rendering rule renders only the structural
+  template, i.e. choices.
+* So the flag is real under the rule, but the baseline produces it, not a loose scorer.
+* Recorded as a `note` ruling on `inspect_evals/bbh` in `rulings.jsonl` (2026-10-10).
+  It moves no flag: 11 of 45 before and after.
+
+**Upstream: nothing to file.**
+* main's `src/inspect_evals/bbh/bbh.py` is byte-identical to 0.24.0.
+* Nothing reports echo's mechanism. Taking the last `ANSWER:` is deliberate in
+  `inspect_ai` (`_util/pattern.py:1-4`, `_multiple_choice.py:96-97`).
+* The nearest is #2600 (MattFisher, open, "not ready"), a meta-issue on how scorers parse
+  answers.
+* On 0.20.0 bbh behaves the same: same scorers, prompts and dyck target. It was not in the first 20.
+
+**Incidental: a real bbh scorer defect, already reported, which the battery cannot see.**
+* #2488 (Lostmanu, opened 2026-09-20, open) covers it. `match(location="end")` strips edge
+  punctuation from both sides (`scorer/_common.py:86-88`), so the all-bracket dyck target
+  `ANSWER: ] >` reduces to `answer`. Any `ANSWER:` line then scores, and the brackets are
+  never compared. In the exact-match subsets, the sign is dropped and suffixes match.
+* The fix PR is #2491 (open, review required). It changes only the exact-match and dyck branch.
+* No battery member ends in "answer", so the sweep cannot see the dyck half.

@@ -1,0 +1,145 @@
+{
+  "command": [
+    ".venv-024/Scripts/evalfloor",
+    "check",
+    "inspect_evals/paws"
+  ],
+  "display": ".venv-024/Scripts/evalfloor check inspect_evals/paws",
+  "started_at": "2026-10-10T15:01:28+00:00",
+  "elapsed_s": 53.432,
+  "returncode": 0,
+  "events": [
+    {
+      "t": 18.975,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "Loading dataset google-research-datasets/paws from Hugging Face..."
+    },
+    {
+      "t": 22.708,
+      "stream": "stderr",
+      "kind": "cr",
+      "text": ""
+    },
+    {
+      "t": 22.719,
+      "stream": "stderr",
+      "kind": "cr",
+      "text": "Saving the dataset (0/1 shards):   0%|          | 0/8000 [00:00<?, ? examples/s]"
+    },
+    {
+      "t": 22.719,
+      "stream": "stderr",
+      "kind": "cr",
+      "text": "Saving the dataset (1/1 shards): 100%|██████████| 8000/8000 [00:00<00:00, 713119.93 examples/s]"
+    },
+    {
+      "t": 22.719,
+      "stream": "stderr",
+      "kind": "line",
+      "text": "Saving the dataset (1/1 shards): 100%|██████████| 8000/8000 [00:00<00:00, 692786.72 examples/s]"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "inspect_evals/paws  (inspect_ai 0.3.263, inspect_evals 0.24.0)"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "  8000 samples, scorer(s): inspect_ai/pattern"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "  scorer inspect_ai/pattern"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "    majority baseline   55.80%  (modal target 'No')"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "    uniform baseline    49.57%"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "    empty            0.00%  0/8000"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "    whitespace       0.00%  0/8000"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "    refusal          0.00%  0/8000"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "    all_labels       0.00%  0/8000"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "    all_letters      0.00%  0/8000"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "    echo             0.00%  0/8000"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "    boilerplate      0.00%  0/8000"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "    format_only      0.00%  0/8000"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "    majority        55.80%  4464/8000"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "    uniform         49.57%  19829/40000"
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": ""
+    },
+    {
+      "t": 51.825,
+      "stream": "stdout",
+      "kind": "line",
+      "text": "inspect_evals/paws: clean"
+    }
+  ]
+}

@@ -24,6 +24,10 @@ Every judgement call in the sweep, applied mechanically from `rulings.jsonl`. Th
 
 ## Rulings applied to this sweep
 
+| task | action | effect | reason | source |
+|---|---|---|---|---|
+| `inspect_evals/bbh` | `note` | inspect_evals/bbh: note recorded | Task property, recorded after the 0.24.0 sweep; it moves no flag. Every bbh input carries its subset's few-shot examples, each ending in an ANSWER line, and the scorers read the last one, so echo answers each subset with that subset's last example label: a constant guess. It clears the dataset-wide majority (B, 1030 of 6508) because B is no answer on the six binary subsets, where echo scores 697; on the multiple-choice subsets it is below majority (990 vs 1030). It never beats a subset's own most common answer except on word_sorting, where 8 inputs list their words already sorted. Lines are inspect_evals 0.24.0 (bbh.py) and inspect_ai 0.3.263 (the two parsers). | `its few-shot examples end in `ANSWER: <label>` (bbh.py:98-108) and the scorers keep the last `ANSWER:` (_multiple_choice.py:106-115, _util/pattern.py:1-8), so echo gives one fixed label per subset: a property of the task, not a loose scorer` |
+
 ## Rulings that matched no task in this sweep
 
 | task | action | reason |

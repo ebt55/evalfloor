@@ -6,13 +6,127 @@
 
 ## The number, and its denominator
 
-**5 of 20 tasks** swept have at least one content-free completion that scores at or above their own majority-class baseline. Of the whole collection, **58 of 237** declared tasks are reachable for this sweep at all.
+I fed eight answers with no content to the real scorers of 45 Inspect Evals tasks that run without a model, on `inspect_evals` 0.24.0. 1 reached its majority baseline other than by construction: `inspect_evals/bbh`, where `echo` scores 26.2% against a 15.8% baseline because its few-shot examples end in `ANSWER: <label>` (bbh.py:98-108) and the scorers keep the last `ANSWER:` (_multiple_choice.py:106-115, _util/pattern.py:1-8), so echo gives one fixed label per subset: a property of the task, not a loose scorer. On 10 more, the placeholder answer is the modal answer (§8.5). The one loose scorer this tool found on 0.20.0, `paws` (reported first by caiotheodoro, #2331), was fixed upstream in v0.21.0, and this sweep confirms the fix. 11 flagged under the preregistered rule, 10 of them ties; the preregistered negative result does not hold.
 
-Echoing the question back scores above zero on **3 of 20** tasks swept. On `paws`, **970 of 8,000** samples already contain a label somewhere in their own text, so the input scores against itself.
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/figures/f1-floor-dark.svg"><img src="docs/figures/f1-floor-light.svg" alt="Dot plot of 45 tasks on inspect_evals 0.24.0, one row per task, sorted by gap: a tick at each task&#x27;s majority baseline and a point at its best content-free score. 1 task is flagged beyond the ties: bbh, where echo scores 26.2% against a 15.8% majority (task property, per its note ruling). 10 tasks tie the majority exactly (lab_bench_dbqa, lab_bench_litqa, lab_bench_seqqa, lab_bench_tableqa, mmlu_pro, musr, pubmedqa, truthfulqa, vstar_bench_attribute_recognition and wmdp_cyber), because &quot;ANSWER: A&quot; is also the majority answer: a tie by construction (§8.5); they are counted in the 11 flags. On chembench and macbench the majority answer itself scores 0.0%, and a zero never flags. The other 32 sit below their baseline, by 0.1 to 62.2 points."></picture>
 
-On the raw arm -- members written plainly, ignoring each task's answer template -- it is 17 of 20. Of the 5 flagged, **4 rest on the template collision** -- the only flagging member is `format_only` and the string it was scored on is `majority`'s own string, so the flag is a tie between a member and itself. The rule is unchanged and the flags are marked; `results/floor_matrix.md` names them.
+11 of 45 tasks flagged under §4, 10 of them ties by construction (§8.5), on inspect_evals 0.24.0. Data: `f1-floor.csv`.
 
-Preregistration `PREREGISTRATION.md` was committed at `912345f8d5be` **before** this sweep ran. Anyone can check that independently: `git log --format='%H %ad' -- PREREGISTRATION.md`.
+<!-- figure F1 data sha256:ba790f0ee19a05c6bd1ef13161aeab30b004235242493a211cfeb7ea8a6650ae -->
+
+<details><summary>Data</summary>
+
+| task | scorer | majority | best content-free | score | gap | §4 |
+|---|---|---|---|---|---|---|
+| `bbh` | `inspect_evals/bbh_scorer` | 15.8% | echo | 26.2% | +10.3 pts | **flagged** (task property) |
+| `lab_bench_dbqa` | `inspect_evals/precision_choice` | 23.1% | format_only | 23.1% | +0.0 pts | flagged, tie (§8.5) |
+| `lab_bench_litqa` | `inspect_evals/precision_choice` | 22.6% | format_only | 22.6% | +0.0 pts | flagged, tie (§8.5) |
+| `lab_bench_seqqa` | `inspect_evals/precision_choice` | 22.7% | format_only | 22.7% | +0.0 pts | flagged, tie (§8.5) |
+| `lab_bench_tableqa` | `inspect_evals/precision_choice` | 20.1% | format_only | 20.1% | +0.0 pts | flagged, tie (§8.5) |
+| `mmlu_pro` | `inspect_ai/choice` | 11.7% | format_only | 11.7% | +0.0 pts | flagged, tie (§8.5) |
+| `musr` | `inspect_ai/choice` | 50.0% | format_only | 50.0% | +0.0 pts | flagged, tie (§8.5) |
+| `pubmedqa` | `inspect_ai/choice` | 55.2% | format_only | 55.2% | +0.0 pts | flagged, tie (§8.5) |
+| `truthfulqa` | `inspect_ai/choice` | 24.8% | format_only | 24.8% | +0.0 pts | flagged, tie (§8.5) |
+| `vstar_bench_attribute_recognition` | `inspect_ai/choice` | 29.6% | format_only | 29.6% | +0.0 pts | flagged, tie (§8.5) |
+| `wmdp_cyber` | `inspect_ai/choice` | 26.6% | format_only | 26.6% | +0.0 pts | flagged, tie (§8.5) |
+| `chembench` | `inspect_evals/chembench_scorer` | 0.0% | empty | 0.0% | +0.0 pts | clean |
+| `macbench` | `inspect_evals/macbench_scorer` | 0.0% | empty | 0.0% | +0.0 pts | clean |
+| `bbq` | `inspect_ai/choice` | 33.4% | format_only | 33.3% | -0.1 pts | clean |
+| `hellaswag` | `inspect_ai/choice` | 25.7% | format_only | 25.0% | -0.7 pts | clean |
+| `winogrande` | `inspect_ai/choice` | 50.4% | format_only | 49.6% | -0.9 pts | clean |
+| `gsm8k` | `inspect_ai/match` | 3.0% | echo | 2.1% | -0.9 pts | clean |
+| `lab_bench_figqa` | `inspect_evals/precision_choice` | 19.3% | format_only | 18.2% | -1.1 pts | clean |
+| `onet_m6` | `inspect_ai/choice` | 21.2% | format_only | 19.9% | -1.3 pts | clean |
+| `commonsense_qa` | `inspect_ai/choice` | 20.9% | format_only | 19.6% | -1.3 pts | clean |
+| `arc_easy` | `inspect_ai/choice` | 26.6% | format_only | 25.1% | -1.6 pts | clean |
+| `wmdp_bio` | `inspect_ai/choice` | 26.6% | format_only | 24.7% | -1.9 pts | clean |
+| `vstar_bench_spatial_relationship_reasoning` | `inspect_ai/choice` | 51.3% | format_only | 48.7% | -2.6 pts | clean |
+| `mmlu_5_shot` | `inspect_ai/choice` | 26.9% | echo | 24.1% | -2.8 pts | clean |
+| `wmdp_chem` | `inspect_ai/choice` | 26.5% | format_only | 23.5% | -2.9 pts | clean |
+| `aime2024` | `inspect_evals/aime_scorer` | 6.7% | all_labels | 3.3% | -3.3 pts | clean |
+| `aime2025` | `inspect_evals/aime_scorer` | 3.3% | empty | 0.0% | -3.3 pts | clean |
+| `aime2026` | `inspect_evals/aime_scorer` | 3.3% | empty | 0.0% | -3.3 pts | clean |
+| `bbeh` | `inspect_evals/bbeh_scorer` | 3.9% | empty | 0.0% | -3.8 pts | clean |
+| `mmlu_0_shot` | `inspect_ai/choice` | 26.8% | format_only | 23.0% | -3.8 pts | clean |
+| `arc_challenge` | `inspect_ai/choice` | 26.5% | format_only | 22.7% | -3.8 pts | clean |
+| `bbeh_mini` | `inspect_evals/bbeh_scorer` | 4.6% | empty | 0.2% | -4.3 pts | clean |
+| `drop` | `inspect_ai/f1` | 7.3% | echo | 2.3% | -4.9 pts | clean |
+| `race_h` | `inspect_ai/choice` | 27.2% | format_only | 21.6% | -5.6 pts | clean |
+| `lab_bench_protocolqa` | `inspect_evals/precision_choice` | 26.9% | format_only | 17.6% | -9.3 pts | clean |
+| `sec_qa_v1` | `inspect_ai/choice` | 29.1% | format_only | 19.1% | -10.0 pts | clean |
+| `sec_qa_v1_5_shot` | `inspect_ai/choice` | 29.1% | format_only | 19.1% | -10.0 pts | clean |
+| `sec_qa_v2` | `inspect_ai/choice` | 31.0% | format_only | 21.0% | -10.0 pts | clean |
+| `sec_qa_v2_5_shot` | `inspect_ai/choice` | 31.0% | format_only | 21.0% | -10.0 pts | clean |
+| `lab_bench_cloning_scenarios` | `inspect_evals/precision_choice` | 27.3% | format_only | 15.2% | -12.1 pts | clean |
+| `lab_bench_suppqa` | `inspect_evals/precision_choice` | 31.7% | format_only | 17.1% | -14.6 pts | clean |
+| `pre_flight` | `inspect_ai/choice` | 44.0% | format_only | 24.3% | -19.7 pts | clean |
+| `squad` | `inspect_ai/f1` | 50.1% | echo | 4.1% | -45.9 pts | clean |
+| `paws` | `inspect_ai/pattern` | 55.8% | empty | 0.0% | -55.8 pts | clean |
+| `boolq` | `inspect_ai/pattern` | 62.2% | empty | 0.0% | -62.2 pts | clean |
+
+</details>
+
+Status: closed 2026-10-10; no further sweeps.
+
+Echoing the question back scores above zero on **5 of 45** tasks swept. Counted in samples, the most is on `mmlu_5_shot`: **3,374 of 14,015** samples score as correct when their own input is handed back as the answer, against a 26.9% `majority` baseline. Whatever the scorer credits there was in the question.
+
+## The denominator
+
+45 of 45 countable on 0.24.0. The list was fixed in §11 from the 58 tasks reachable on 0.20.0; 0.24.0 reaches 58 of 239 declared, and no reachable task is left off the list.
+
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/figures/f3-denominator-dark.svg"><img src="docs/figures/f3-denominator-light.svg" alt="One horizontal bar of the 237 tasks declared in the 0.20.0 inventory, split into sandbox 76; optional dependency 49; grader 27; network, gated or too large 27; not counted 13; ran 45. The countable 45 are highlighted; 45 of them ran on inspect_evals 0.24.0."></picture>
+
+237 declared in the 0.20.0 inventory, 58 reachable, 13 not counted, 45 countable, 45 ran. inspect_evals 0.24.0's own inventory reaches 58 of 239 declared; it is not part of the bar. Data: `f3-denominator.csv`.
+
+<!-- figure F3 data sha256:84e86042244a5e7bf8a9e5ab87799b68efcf0ad01be27e24714e1b653f688975 -->
+
+<details><summary>Data</summary>
+
+| segment | tasks | detail |
+|---|---|---|
+| sandbox | 76 | sandbox_required 76 |
+| optional dependency | 49 | extra_dependency 49 |
+| grader | 27 | model_graded 27 |
+| network, gated or too large | 27 | network_required 17; gated_dataset 7; too_large 3 |
+| not counted | 13 | scores behaviour, not answer correctness: agent_threat_bench_autonomy_hijack, agent_threat_bench_data_exfil, agent_threat_bench_memory_poison, air_bench, make_me_pay, stereoset; needs solver state: tau2_airline, tau2_banking, tau2_retail, tau2_telecom; needs a judge: agentharm, agentharm_benign, vqa_rad |
+| ran | 45 | inspect_evals 0.24.0 |
+| **declared** | **237** | |
+
+</details>
+
+Every listed task ran.
+
+### Not counted
+
+Reachable, and deliberately not swept. Each task has a `not_counted` row in `rulings.jsonl` that quotes the source line its treatment rests on, so the list is data rather than code.
+
+| treatment | tasks | which |
+|---|---|---|
+| scores behaviour, not answer correctness | 6 | `agent_threat_bench_autonomy_hijack`, `agent_threat_bench_data_exfil`, `agent_threat_bench_memory_poison`, `air_bench`, `make_me_pay`, `stereoset` |
+| needs solver state | 4 | `tau2_airline`, `tau2_banking`, `tau2_retail`, `tau2_telecom` |
+| needs a judge | 3 | `agentharm`, `agentharm_benign`, `vqa_rad` |
+| **not counted** | **13** | |
+
+### Reachability on `inspect_evals` 0.24.0
+
+| reason | tasks | meaning |
+|---|---|---|
+| `sandbox_required` | 78 | the task or its scorer needs a container |
+| `extra_dependency` | 49 | needs an optional dependency group that is not installed |
+| `model_graded` | 27 | the scorer needs a grader model; not part of the deterministic arm |
+| `network_required` | 17 | fetches from a URL or clones a repository at run time |
+| `gated_dataset` | 7 | the Hugging Face dataset requires accepting terms or an access grant |
+| `too_large` | 3 | the dataset exceeds the disk cap recorded in PREREGISTRATION.md |
+| **reachable** | **58** | the deterministic sweep can run these |
+| **declared total** | **239** | |
+
+## Determinism
+
+Two runs in separate processes, digest `7981d9ebdb69df63` both times.
+
+## Preregistration
+
+Preregistration committed at `912345f8d5be`; its close-out addendum, §11, at `27cdc33933db`. `git log --format='%H %ad' -- PREREGISTRATION.md` lists both.
 
 ## The model-graded arm
 
@@ -28,24 +142,60 @@ Judge-disagreement control on `inspect_evals/coconot`, against `openrouter/z-ai/
 
 A scorer in Inspect is a function of a completion and a target. It does not care whether a model produced the completion. So eval-floor drives an eval's real scorer, over its real dataset, with a battery of completions that carry no information about the sample: the empty string, a refusal, every label concatenated. No model is called. The sweep costs nothing and is deterministic, which is what makes it reproducible by anyone.
 
+<img src="docs/figures/g1-paws-battery.gif" alt="Animation in two panels, inspect_evals 0.20.0 on the left and 0.24.0 on the right: each of paws&#x27;s 8 content-free completions is typed in, then its score bar grows against the 55.8% majority line. empty 0.0% then 0.0%; whitespace 0.0% then 0.0%; refusal 0.0% then 0.0%; all_labels 100.0% then 0.0%; all_letters 0.0% then 0.0%; echo 12.1% then 0.0%; boilerplate 0.0% then 0.0%; format_only 0.0% then 0.0%. paws: all_labels reaches the majority on 0.20.0; none does on 0.24.0.">
+
+paws: all_labels reaches the majority on 0.20.0; none does on 0.24.0. `echo` varies per sample; one example is shown. Data: `f2-paws-fix.csv`.
+
+<!-- figure G1 data sha256:86e9a3964c7b238f538e3ac1bad7abdf6a5b8639942ad753e84e60cea2ba5b55 -->
+
+<details><summary>Data</summary>
+
+| member | completion | 0.20.0 | 0.24.0 |
+|---|---|---|---|
+| *majority* | | 55.8% | 55.8% |
+| empty | `""` | 0.0% | 0.0% |
+| whitespace | `"\n"` | 0.0% | 0.0% |
+| refusal | `"I'm sorry, but I can't help with that."` | 0.0% | 0.0% |
+| all_labels | `"No Yes"` | 100.0% **reaches** | 0.0% |
+| all_letters | `"A B C D E"` | 0.0% | 0.0% |
+| echo | `"Sentence1: This was a series of neste…"` | 12.1% | 0.0% |
+| boilerplate | `"Thank you for the question. This is a…"` | 0.0% | 0.0% |
+| format_only | `"ANSWER: A"` | 0.0% | 0.0% |
+
+</details>
+
 ## The case that started it
 
 Inspect Evals issue [#2331](https://github.com/UKGovernmentBEIS/inspect_evals/issues/2331) was opened on 2026-08-31 by **caiotheodoro**, who found that the constant string `"yesno"` scores 8000 of 8000 on the `paws` eval, because the eval is scored with `includes()` and both labels are substrings of that constant. **That finding is theirs, not this project's.** eval-floor generalises it, asking the same question mechanically of every task in the collection. [#2334](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2334) by **jkopczyn** merged 2026-09-16; the v0.21.0 release notes (2026-09-17) list the `paws` and `boolq` fix; as of 2026-10-10 the latest release is 0.24.0. The anchor stays on 0.20.0, where the behaviour is present. `tests/test_paws_regression.py` reproduces it from committed code.
 
-## Reachability
+`paws` and `boolq` on `inspect_evals` 0.24.0, generated from this sweep:
 
-The denominator comes before the result. Every declared task is either swept or excluded with a recorded reason; the full per-task table is in [`results/coverage.md`](results/coverage.md).
+| task | scorer | majority | best content-free | flagged |
+|---|---|---|---|---|
+| `paws` | `inspect_ai/pattern` | 55.8% | empty 0.0% | no |
+| `boolq` | `inspect_ai/pattern` | 62.2% | empty 0.0% | no |
 
-| reason | tasks | meaning |
-|---|---|---|
-| `sandbox_required` | 76 | the task or its scorer needs a container |
-| `extra_dependency` | 49 | needs an optional dependency group that is not installed |
-| `model_graded` | 27 | the scorer needs a grader model; not part of the deterministic arm |
-| `network_required` | 17 | fetches from a URL or clones a repository at run time |
-| `gated_dataset` | 7 | the Hugging Face dataset requires accepting terms or an access grant |
-| `too_large` | 3 | the dataset exceeds the disk cap recorded in PREREGISTRATION.md |
-| **reachable** | **58** | the deterministic sweep can run these |
-| **declared total** | **237** | |
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/figures/f2-paws-fix-dark.svg"><img src="docs/figures/f2-paws-fix-light.svg" alt="Dumbbell chart of paws&#x27;s content-free members on inspect_evals 0.20.0 and 0.24.0, against the 55.8% majority line: empty 0.0% then 0.0%; whitespace 0.0% then 0.0%; refusal 0.0% then 0.0%; all_labels 100.0% then 0.0%; all_letters 0.0% then 0.0%; echo 12.1% then 0.0%; boilerplate 0.0% then 0.0%; format_only 0.0% then 0.0%. paws: all_labels reaches the majority on 0.20.0; none does on 0.24.0."></picture>
+
+paws: all_labels reaches the majority on 0.20.0; none does on 0.24.0. Data: `f2-paws-fix.csv`.
+
+<!-- figure F2 data sha256:86e9a3964c7b238f538e3ac1bad7abdf6a5b8639942ad753e84e60cea2ba5b55 -->
+
+<details><summary>Data</summary>
+
+| member | completion | 0.20.0 | 0.24.0 |
+|---|---|---|---|
+| *majority* | | 55.8% | 55.8% |
+| empty | `""` | 0.0% | 0.0% |
+| whitespace | `"\n"` | 0.0% | 0.0% |
+| refusal | `"I'm sorry, but I can't help with that."` | 0.0% | 0.0% |
+| all_labels | `"No Yes"` | 100.0% **reaches** | 0.0% |
+| all_letters | `"A B C D E"` | 0.0% | 0.0% |
+| echo | `"Sentence1: This was a series of neste…"` | 12.1% | 0.0% |
+| boilerplate | `"Thank you for the question. This is a…"` | 0.0% | 0.0% |
+| format_only | `"ANSWER: A"` | 0.0% | 0.0% |
+
+</details>
 
 ## The battery
 
@@ -95,7 +245,7 @@ Defects are logged, not quietly fixed. What the instrument got wrong is what tel
 | limitation | what it means for the number |
 |---|---|
 | A flagged task is not a worthless benchmark | a loose scorer inflates a number without saying the underlying task is easy. **No claim is made about the conclusions of any published paper** that used any of these evals. |
-| One version pin | everything here is measured on `inspect_ai` 0.3.263 and `inspect_evals` 0.20.0, battery fingerprint `b019ebb6ecee`, as each arm's `sweep.json` recorded it. Rows from different versions are never mixed; on any bump the whole sweep re-runs. |
+| Two arms, two pins | Deterministic arm: `inspect_evals` 0.24.0. Graded arm: 0.20.0, not re-run. Arms are never added. The deterministic arm was measured on `inspect_ai` 0.3.263 and `inspect_evals` 0.24.0, battery fingerprint `b019ebb6ecee`, run fingerprint `e498a3949683`; the model-graded arm on `inspect_ai` 0.3.263 and `inspect_evals` 0.20.0, battery fingerprint `b019ebb6ecee`. Each is what that arm's own `sweep.json` recorded, and no rate mixes releases. |
 | Deterministic scorers only | model-graded tasks are excluded from this number and deferred to a separate arm with its own intervals. The exclusion is counted, not hidden. |
 | The rendering rule is a choice | writing a member in the task's answer template changes what it scores. Both arms are published so the size of that effect is visible, but the headline depends on which arm is preregistered. |
 | Reachability is far below the collection size | most tasks need a container, a grader model, a gated dataset or an extra dependency. The denominator is published as prominently as the rate. |
@@ -105,16 +255,90 @@ Defects are logged, not quietly fixed. What the instrument got wrong is what tel
 
 ## Reproducing it
 
+The close-out, on `inspect_evals` 0.24.0: the whole list, twice, in separate processes. The second run goes to `results/smoke/repeat`, and `report` compares the two task by task. (`Scripts/` is `bin/` off Windows.)
+
+```
+uv venv .venv-024 --python 3.13
+uv pip install --python .venv-024/Scripts/python.exe --no-deps -e .
+uv pip install --python .venv-024/Scripts/python.exe inspect_ai==0.3.263 inspect_evals==0.24.0 "pytest>=8.0" "pytest-asyncio>=0.24"
+.venv-024/Scripts/evalfloor sweep --closeout --out results/
+.venv-024/Scripts/evalfloor sweep --closeout --out results/smoke/repeat
+.venv-024/Scripts/evalfloor report --out results --repeat results/smoke/repeat/sweep.json
+```
+
+The #2331 anchor, on `inspect_evals` 0.20.0, where the behaviour is present:
+
 ```
 uv venv && uv pip install -e ".[dev]"
 pytest                                 # includes the #2331 anchor
-evalfloor inventory                    # regenerate the task inventory
-evalfloor check inspect_evals/paws     # exits non-zero
-evalfloor sweep --first-sweep --out results/
-evalfloor report                       # regenerates every number here
+evalfloor check inspect_evals/paws     # exits non-zero on 0.20.0
 ```
 
-Every number in `results/` and in this file is generated. None is typed by hand. Judgement calls live in `rulings.jsonl`, one row each, quoting the source line they came from, and the report applies that file mechanically. `evalfloor sweep` refuses to write a non-smoke result unless `PREREGISTRATION.md` is already committed in git history, and it records that commit hash in every file it generates.
+<img src="docs/figures/g2-terminal.gif" alt="Terminal recording, real output with long waits compressed: `.venv/Scripts/evalfloor check inspect_evals/paws` on inspect_evals 0.20.0 prints inspect_evals/paws: FLAGGED and exits 1 after 67.8 s; then `.venv-024/Scripts/evalfloor check inspect_evals/paws` on inspect_evals 0.24.0 prints inspect_evals/paws: clean and exits 0 after 53.4 s.">
+
+Recorded 2026-10-10, real output; waits compressed. inspect_evals 0.20.0, exit 1; inspect_evals 0.24.0, exit 0.
+
+<!-- figure G2 data sha256:d64cde2ad7b5ec45f7af5e730911e07e6d35463317c1c7e0f18208f7ee68e02e -->
+
+<details><summary>Data</summary>
+
+| command | release | verdict | exit | real time |
+|---|---|---|---|---|
+| `.venv/Scripts/evalfloor check inspect_evals/paws` | 0.20.0 | inspect_evals/paws: FLAGGED | 1 | 67.8 s |
+| `.venv-024/Scripts/evalfloor check inspect_evals/paws` | 0.24.0 | inspect_evals/paws: clean | 0 | 53.4 s |
+
+</details>
+
+<details><summary>Transcript</summary>
+
+```text
+$ .venv/Scripts/evalfloor check inspect_evals/paws
+Loading dataset google-research-datasets/paws from Hugging Face...
+Saving the dataset (1/1 shards): 100%|██████████| 8000/8000 [00:00<00:00, 100848.86 examples/s]
+inspect_evals/paws  (inspect_ai 0.3.263, inspect_evals 0.20.0)
+  8000 samples, scorer(s): inspect_ai/includes
+  scorer inspect_ai/includes
+    majority baseline   55.80%  (modal target 'No')
+    uniform baseline    49.57%
+    empty            0.00%  0/8000
+    whitespace       0.00%  0/8000
+    refusal          0.00%  0/8000
+    all_labels     100.00%  8000/8000  <-- at or above majority
+    all_letters      0.00%  0/8000
+    echo            12.12%  970/8000
+    boilerplate      0.00%  0/8000
+    format_only      0.00%  0/8000
+    majority        55.80%  4464/8000
+    uniform         49.57%  19829/40000
+    FLAGGED: all_labels score at or above the majority baseline
+
+inspect_evals/paws: FLAGGED
+
+$ .venv-024/Scripts/evalfloor check inspect_evals/paws
+Loading dataset google-research-datasets/paws from Hugging Face...
+Saving the dataset (1/1 shards): 100%|██████████| 8000/8000 [00:00<00:00, 692786.72 examples/s]
+inspect_evals/paws  (inspect_ai 0.3.263, inspect_evals 0.24.0)
+  8000 samples, scorer(s): inspect_ai/pattern
+  scorer inspect_ai/pattern
+    majority baseline   55.80%  (modal target 'No')
+    uniform baseline    49.57%
+    empty            0.00%  0/8000
+    whitespace       0.00%  0/8000
+    refusal          0.00%  0/8000
+    all_labels       0.00%  0/8000
+    all_letters      0.00%  0/8000
+    echo             0.00%  0/8000
+    boilerplate      0.00%  0/8000
+    format_only      0.00%  0/8000
+    majority        55.80%  4464/8000
+    uniform         49.57%  19829/40000
+
+inspect_evals/paws: clean
+```
+
+</details>
+
+Every number in `results/` and in this file is generated. None is typed by hand. Judgement calls live in `rulings.jsonl`, one row each, quoting the source line they came from, and the report applies that file mechanically. `evalfloor sweep` refuses to write a non-smoke result unless `PREREGISTRATION.md` is already committed in git history, and it records that commit hash in every file it generates. `evalfloor sweep --closeout` also refuses until the close-out addendum, section 11, is committed and on `origin/master`.
 
 ## Disclosure
 

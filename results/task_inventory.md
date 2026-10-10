@@ -2,22 +2,22 @@
 
 <!-- GENERATED FILE. Do not edit by hand. Regenerate with `evalfloor inventory`. -->
 
-Built by static analysis of the installed `inspect_evals` 0.20.0 package against `inspect_ai` 0.3.263. No dataset was downloaded to produce this file.
+Built by static analysis of the installed `inspect_evals` 0.24.0 package against `inspect_ai` 0.3.263. No dataset was downloaded to produce this file.
 
 ## Totals
 
 | | count |
 |---|---|
-| tasks declared in `eval.yaml` files | 237 |
-| of those, registered in `_registry.py` | 237 |
+| tasks declared in `eval.yaml` files | 239 |
+| of those, registered in `_registry.py` | 239 |
 | reachable for the deterministic sweep | 58 |
-| excluded | 179 |
+| excluded | 181 |
 
 ## Scorer class
 
 | class | tasks |
 |---|---|
-| `deterministic_custom` | 112 |
+| `deterministic_custom` | 114 |
 | `deterministic` | 42 |
 | `model_graded` | 41 |
 | `sandbox` | 41 |
@@ -27,7 +27,7 @@ Built by static analysis of the installed `inspect_evals` 0.20.0 package against
 
 | reason | tasks |
 |---|---|
-| `sandbox_required` | 76 |
+| `sandbox_required` | 78 |
 | `extra_dependency` | 49 |
 | `model_graded` | 27 |
 | `network_required` | 17 |
@@ -57,15 +57,15 @@ Built by static analysis of the installed `inspect_evals` 0.20.0 package against
 | `inspect_evals/gsm8k` | `match(numeric=True)` | 1319 | 5.6 MiB | Mathematics |
 | `inspect_evals/wmdp_cyber` | `choice()` | 1987 | 1.3 MiB | Safeguards |
 | `inspect_evals/arc_easy` | `choice()` | 2376 | 1.2 MiB | Reasoning |
-| `inspect_evals/boolq` | `pattern('(Yes\|No).?\\Z')` | 3270 | 4.7 MiB | Reasoning |
+| `inspect_evals/boolq` | `pattern('\\A[\\W_]*(Yes\|No)[\\W_]*\\Z')` | 3270 | 4.7 MiB | Reasoning |
 | `inspect_evals/race_h` | `choice()` | 3498 | 79.2 MiB | Reasoning |
-| `inspect_evals/paws` | `includes()` | 8000 | 123.3 MiB | Reasoning |
+| `inspect_evals/paws` | `pattern('\\A\\W*\\b(Yes\|No)\\b\\W*\\Z')` | 8000 | 123.3 MiB | Reasoning |
 | `inspect_evals/drop` | `f1(extract_answer)` | 9535 | 11.1 MiB | Reasoning |
 | `inspect_evals/hellaswag` | `choice()` | 10042 | 35.1 MiB | Reasoning |
 | `inspect_evals/squad` | `[f1(), exact()]` | 11873 | 16.9 MiB | Reasoning |
 | `inspect_evals/mmlu_pro` | `choice()` | 12032 | 4.0 MiB | Knowledge |
-| `inspect_evals/mmlu_0_shot` | `choice()` | 14042 | 257.5 MiB | Knowledge |
-| `inspect_evals/mmlu_5_shot` | `choice()` | 14042 | 257.5 MiB | Knowledge |
+| `inspect_evals/mmlu_0_shot` | `choice()` | 13937 | 257.5 MiB | Knowledge |
+| `inspect_evals/mmlu_5_shot` | `choice()` | 14015 | 257.5 MiB | Knowledge |
 | `inspect_evals/bbq` | `choice()` | 58492 | 48.6 MiB | Bias |
 
 ## First sweep: the preregistered 20
@@ -90,9 +90,9 @@ Selection rule: simple deterministic scorer, reachable, ranked by dataset size a
 | 14 | `inspect_evals/wmdp_bio` | `choice()` | 1273 | 1.3 MiB |
 | 15 | `inspect_evals/gsm8k` | `match(numeric=True)` | 1319 | 5.6 MiB |
 | 16 | `inspect_evals/arc_easy` | `choice()` | 2376 | 1.2 MiB |
-| 17 | `inspect_evals/boolq` | `pattern('(Yes\|No).?\\Z')` | 3270 | 4.7 MiB |
+| 17 | `inspect_evals/boolq` | `pattern('\\A[\\W_]*(Yes\|No)[\\W_]*\\Z')` | 3270 | 4.7 MiB |
 | 18 | `inspect_evals/race_h` | `choice()` | 3498 | 79.2 MiB |
-| 19 | `inspect_evals/paws` | `includes()` | 8000 | 123.3 MiB |
+| 19 | `inspect_evals/paws` | `pattern('\\A\\W*\\b(Yes\|No)\\b\\W*\\Z')` | 8000 | 123.3 MiB |
 | 20 | `inspect_evals/drop` | `f1(extract_answer)` | 9535 | 11.1 MiB |
 
 Reserves, in order, replacing any of the twenty that fails at run time: `inspect_evals/hellaswag`, `inspect_evals/squad`, `inspect_evals/mmlu_pro`, `inspect_evals/mmlu_0_shot`, `inspect_evals/mmlu_5_shot`.
@@ -101,8 +101,8 @@ Reserves, in order, replacing any of the twenty that fails at run time: `inspect
 
 | task | scorer expression | class | samples | reachable | reason |
 |---|---|---|---|---|---|
-| `inspect_evals/abstention_bench` | `abstention_bench_scorer(grader_model)` | `model_graded` | 39558 | no | extra_dependency |
-| `inspect_evals/agent_bench_os` | `agent_bench_os_default_scorer()` | `deterministic_custom` | 26 | no | network_required |
+| `inspect_evals/abstention_bench` | `abstention_bench_scorer(grader_model)` | `model_graded` | 39277 | no | extra_dependency |
+| `inspect_evals/agent_bench_os` | `agent_bench_os_default_scorer()` | `deterministic_custom` | 119 | no | network_required |
 | `inspect_evals/agent_threat_bench_autonomy_hijack` | `agent_threat_bench_scorer()` | `deterministic_custom` | 6 | yes |  |
 | `inspect_evals/agent_threat_bench_data_exfil` | `agent_threat_bench_scorer()` | `deterministic_custom` | 8 | yes |  |
 | `inspect_evals/agent_threat_bench_memory_poison` | `agent_threat_bench_scorer()` | `deterministic_custom` | 10 | yes |  |
@@ -125,7 +125,7 @@ Reserves, in order, replacing any of the twenty that fails at run time: `inspect
 | `inspect_evals/air_bench` | `air_bench_scorer()` | `deterministic_custom` | 5694 | yes |  |
 | `inspect_evals/anima` | `anima_scorer(dimensions=dims_by_name, revision=dataset_revision, grader_models=grader_models, grader_config=grader_config)` | `model_graded` | 115 | no | extra_dependency |
 | `inspect_evals/ape_eval` | `ape_scorer()` | `deterministic_custom` | 600 | no | network_required |
-| `inspect_evals/apps` | `verify()` | `sandbox` | 5000 | no | sandbox_required |
+| `inspect_evals/apps` | `verify()` | `sandbox` | 3000 | no | sandbox_required |
 | `inspect_evals/arc_challenge` | `choice()` | `deterministic` | 1172 | yes |  |
 | `inspect_evals/arc_easy` | `choice()` | `deterministic` | 2376 | yes |  |
 | `inspect_evals/assistant_bench_closed_book_one_shot` | `assistant_bench_scorer()` | `deterministic_custom` | 33 | no | sandbox_required |
@@ -134,15 +134,15 @@ Reserves, in order, replacing any of the twenty that fails at run time: `inspect
 | `inspect_evals/assistant_bench_web_search_one_shot` | `assistant_bench_scorer()` | `deterministic_custom` | 33 | no | sandbox_required |
 | `inspect_evals/assistant_bench_web_search_zero_shot` | `assistant_bench_scorer()` | `deterministic_custom` | 33 | no | sandbox_required |
 | `inspect_evals/b3` | `b3_scorer()` | `deterministic_custom` | 630 | no | extra_dependency |
-| `inspect_evals/bbeh` | `bbeh_scorer()` | `deterministic_custom` | 4520 | yes |  |
+| `inspect_evals/bbeh` | `bbeh_scorer()` | `deterministic_custom` | 4519 | yes |  |
 | `inspect_evals/bbeh_mini` | `bbeh_scorer()` | `deterministic_custom` | 460 | yes |  |
-| `inspect_evals/bbh` | `bbh_scorer()` | `deterministic_custom` | 250 | yes |  |
+| `inspect_evals/bbh` | `bbh_scorer()` | `deterministic_custom` | 6509 | yes |  |
 | `inspect_evals/bbq` | `choice()` | `deterministic` | 58492 | yes |  |
 | `inspect_evals/bfcl` | `bfcl_scorer()` | `deterministic_custom` | 4981 | no | extra_dependency |
 | `inspect_evals/bfcl_prereqs` | `_bfcl_prereqs_scorer()` | `deterministic_custom` | 111 | no | extra_dependency |
 | `inspect_evals/bigcodebench` | `scorer or verify()` | `sandbox` | 1140 | no | sandbox_required |
 | `inspect_evals/bold` | `[toxicity_scorer(), sentiment_scorer(), regard_scorer()]` | `deterministic_custom` | 7200 | no | extra_dependency |
-| `inspect_evals/boolq` | `pattern('(Yes\|No).?\\Z')` | `deterministic` | 3270 | yes |  |
+| `inspect_evals/boolq` | `pattern('\\A[\\W_]*(Yes\|No)[\\W_]*\\Z')` | `deterministic` | 3270 | yes |  |
 | `inspect_evals/browse_comp` | `browse_comp_scorer(scorer_model)` | `model_graded` | 1266 | no | sandbox_required |
 | `inspect_evals/chembench` | `chembench_scorer()` | `deterministic_custom` | 2786 | yes |  |
 | `inspect_evals/class_eval` | `class_eval_scorer()` | `sandbox` | 100 | no | sandbox_required |
@@ -161,8 +161,8 @@ Reserves, in order, replacing any of the twenty that fails at run time: `inspect
 | `inspect_evals/cybermetric_2000` | `choice()` | `deterministic` | 2000 | no | network_required |
 | `inspect_evals/cybermetric_500` | `choice()` | `deterministic` | 500 | no | network_required |
 | `inspect_evals/cybermetric_80` | `choice()` | `deterministic` | 80 | no | network_required |
-| `inspect_evals/cyse2_interpreter_abuse` | `model_graded_qa(template=PROMPT_JUDGE_RESPONSE, model=judge_llm)` | `model_graded` | 500 | no | sandbox_required |
-| `inspect_evals/cyse2_prompt_injection` | `model_graded_qa(template=PROMPT_JUDGE_RESPONSE, model=judge_llm)` | `model_graded` | 251 | no | sandbox_required |
+| `inspect_evals/cyse2_interpreter_abuse` | `model_graded_qa(template=PROMPT_JUDGE_RESPONSE, model=judge_llm)` | `model_graded` | 489 | no | sandbox_required |
+| `inspect_evals/cyse2_prompt_injection` | `model_graded_qa(template=PROMPT_JUDGE_RESPONSE, model=judge_llm)` | `model_graded` | 250 | no | sandbox_required |
 | `inspect_evals/cyse2_vulnerability_exploit` | `vul_exploit_scorer()` | `sandbox` | 585 | no | sandbox_required |
 | `inspect_evals/cyse3_visual_prompt_injection` | `model_graded_qa(template=PROMPT_JUDGE_RESPONSE, model=judge_llm)` | `model_graded` | 1000 | no | model_graded |
 | `inspect_evals/cyse4_autocomplete` | `security_scorer()` | `deterministic_custom` | 1916 | no | extra_dependency |
@@ -176,6 +176,7 @@ Reserves, in order, replacing any of the twenty that fails at run time: `inspect
 | `inspect_evals/docvqa` | `docvqa_scorer()` | `deterministic_custom` | 5349 | no | too_large |
 | `inspect_evals/drop` | `f1(extract_answer)` | `deterministic` | 9535 | yes |  |
 | `inspect_evals/ds1000` | `ds1000_scorer()` | `sandbox` | 1000 | no | sandbox_required |
+| `inspect_evals/ds1000_sandbox_check` | `[sandbox_check_scorer(scorer, cases, expected_inventory=expected_inventory, exact_packages=exact_packages, extra_inventory_checks=extra_inventory_checks)]` | `deterministic_custom` | 4 | no | sandbox_required |
 | `inspect_evals/fortress_adversarial` | `fortress_scorer_adversarial(grader_models)` | `model_graded` | 500 | no | model_graded |
 | `inspect_evals/fortress_benign` | `fortress_scorer_benign(grader_model)` | `model_graded` | 500 | no | model_graded |
 | `inspect_evals/frontier_cs` | `scorer or frontier_cs_scorer()` | `sandbox` | 238 | no | sandbox_required |
@@ -221,7 +222,7 @@ Reserves, in order, replacing any of the twenty that fails at run time: `inspect
 | `inspect_evals/healthbench_hard` | `healthbench_scorer(judge_model=judge_model, judge_max_tokens=judge_max_tokens, judge_temperature=judge_temperature, judge_system_message=judge_system_message, bootstrap_samples=bootstrap_samples, include_subset_scores=include_subset_scores, length_adjustment_center=length_adjustment_center, length_adjustment_penalty_per_500_chars=length_adjustment_penalty_per_500_chars)` | `model_graded` | 1000 | no | extra_dependency |
 | `inspect_evals/healthbench_meta_eval` | `healthbench_scorer(judge_model=judge_model, judge_max_tokens=judge_max_tokens, judge_temperature=judge_temperature, judge_system_message=judge_system_message, bootstrap_samples=bootstrap_samples, include_subset_scores=include_subset_scores, length_adjustment_center=length_adjustment_center, length_adjustment_penalty_per_500_chars=length_adjustment_penalty_per_500_chars)` | `model_graded` | 29511 | no | extra_dependency |
 | `inspect_evals/hellaswag` | `choice()` | `deterministic` | 10042 | yes |  |
-| `inspect_evals/hle` | `scorers_from_spec(scorer)` | `deterministic_custom` | 2500 | no | gated_dataset |
+| `inspect_evals/hle` | `scorers_from_spec(scorer)` | `deterministic_custom` | 668 | no | gated_dataset |
 | `inspect_evals/humaneval` | `scorer or verify()` | `sandbox` | 164 | no | sandbox_required |
 | `inspect_evals/ifeval` | `instruction_following()` | `deterministic_custom` | 541 | no | extra_dependency |
 | `inspect_evals/ifevalcode` | `ifevalcode_scorer()` | `deterministic_custom` | 810 | no | sandbox_required |
@@ -237,6 +238,7 @@ Reserves, in order, replacing any of the twenty that fails at run time: `inspect
 | `inspect_evals/instrumentaleval` | `instrumentaleval_scorer(grader_model=get_model(grader_model, config=GenerateConfig(temperature=grader_temperature)))` | `model_graded` | 76 | no | model_graded |
 | `inspect_evals/ipi_coding_agent` | `ipi_scorer()` | `sandbox` | 45 | no | sandbox_required |
 | `inspect_evals/kernelbench` | `[kernelbench_scorer(num_correct_trials=num_correct_trials, num_perf_trials=num_perf_trials, measure_performance=measure_performance, timing_method=timing_method, verbose=verbose, build_dir=build_dir, device=device, backend=backend, precision=precision)]` | `sandbox` | 250 | no | sandbox_required |
+| `inspect_evals/kernelbench_sandbox_check` | `[sandbox_check_scorer(scorer, cases, expected_inventory=expected_inventory, exact_packages=exact_packages, extra_inventory_checks=extra_inventory_checks)]` | `deterministic_custom` | 3 | no | sandbox_required |
 | `inspect_evals/lab_bench_cloning_scenarios` | `precision_choice(no_answer=UNCERTAIN_ANSWER_CHOICE)` | `deterministic_custom` | 33 | yes |  |
 | `inspect_evals/lab_bench_dbqa` | `precision_choice(no_answer=UNCERTAIN_ANSWER_CHOICE)` | `deterministic_custom` | 520 | yes |  |
 | `inspect_evals/lab_bench_figqa` | `precision_choice(no_answer=UNCERTAIN_ANSWER_CHOICE)` | `deterministic_custom` | 181 | yes |  |
@@ -248,7 +250,7 @@ Reserves, in order, replacing any of the twenty that fails at run time: `inspect
 | `inspect_evals/lingoly` | `exact_match_lingoly()` | `deterministic_custom` | 408 | no | gated_dataset |
 | `inspect_evals/lingoly_too` | `exact_match_lingoly_too()` | `deterministic_custom` | 1203 | no | gated_dataset |
 | `inspect_evals/livebench` | `[decide_scorer()]` | `deterministic_custom` | 910 | no | extra_dependency |
-| `inspect_evals/livecodebench_pro` | `custom_scorer or livecodebench_pro_scorer()` | `sandbox` | 1404 | no | sandbox_required |
+| `inspect_evals/livecodebench_pro` | `custom_scorer or livecodebench_pro_scorer()` | `sandbox` | 706 | no | sandbox_required |
 | `inspect_evals/macbench` | `macbench_scorer()` | `deterministic_custom` | 1153 | yes |  |
 | `inspect_evals/make_me_pay` | `make_me_pay_scorer()` | `deterministic_custom` | 20 | yes |  |
 | `inspect_evals/makemesay` | `makemesay_scorer()` | `deterministic_custom` | 189 | no | extra_dependency |
@@ -265,8 +267,8 @@ Reserves, in order, replacing any of the twenty that fails at run time: `inspect
 | `inspect_evals/mle_bench_lite` | `scorer or mle_bench_scorer()` | `sandbox` | 22 | no | sandbox_required |
 | `inspect_evals/mlrc_bench` | `mlrc_scorer()` | `sandbox` | 7 | no | sandbox_required |
 | `inspect_evals/mmiu` | `mmiu_scorer()` | `deterministic_custom` | 11698 | no | network_required |
-| `inspect_evals/mmlu_0_shot` | `choice()` | `deterministic` | 14042 | yes |  |
-| `inspect_evals/mmlu_5_shot` | `choice()` | `deterministic` | 14042 | yes |  |
+| `inspect_evals/mmlu_0_shot` | `choice()` | `deterministic` | 13937 | yes |  |
+| `inspect_evals/mmlu_5_shot` | `choice()` | `deterministic` | 14015 | yes |  |
 | `inspect_evals/mmlu_pro` | `choice()` | `deterministic` | 12032 | yes |  |
 | `inspect_evals/mmmu_multiple_choice` | `choice()` | `deterministic` | 847 | no | too_large |
 | `inspect_evals/mmmu_open` | `model_graded_fact()` | `model_graded` | 53 | no | model_graded |
@@ -278,7 +280,7 @@ Reserves, in order, replacing any of the twenty that fails at run time: `inspect
 | `inspect_evals/osworld` | `osworld_scorer()` | `sandbox` | 369 | no | sandbox_required |
 | `inspect_evals/osworld_small` | `osworld_scorer()` | `sandbox` | 39 | no | sandbox_required |
 | `inspect_evals/paperbench` | `blacklist_url_monitor()` | `deterministic_custom` | 23 | no | sandbox_required |
-| `inspect_evals/paws` | `includes()` | `deterministic` | 8000 | yes |  |
+| `inspect_evals/paws` | `pattern('\\A\\W*\\b(Yes\|No)\\b\\W*\\Z')` | `deterministic` | 8000 | yes |  |
 | `inspect_evals/persistbench_beneficial_memory` | `persistbench_judge()` | `model_graded` | 100 | no | model_graded |
 | `inspect_evals/persistbench_cross_domain` | `persistbench_judge()` | `model_graded` | 200 | no | model_graded |
 | `inspect_evals/persistbench_sycophancy` | `persistbench_judge()` | `model_graded` | 200 | no | model_graded |
@@ -295,7 +297,7 @@ Reserves, in order, replacing any of the twenty that fails at run time: `inspect
 | `inspect_evals/sad_stages_oversight` | `lenient_mcq_choice()` | `deterministic_custom` | 400 | no | network_required |
 | `inspect_evals/scbench` | `scorer or scbench_scorer()` | `sandbox` | 30 | no | sandbox_required |
 | `inspect_evals/scicode` | `verify(timeout)` | `deterministic_custom` | 65 | no | sandbox_required |
-| `inspect_evals/sciknoweval` | `sciknoweval_scorer(scorer_config)` | `deterministic_custom` | 70196 | no | extra_dependency |
+| `inspect_evals/sciknoweval` | `sciknoweval_scorer(scorer_config)` | `deterministic_custom` | 69736 | no | extra_dependency |
 | `inspect_evals/sec_qa_v1` | `choice()` | `deterministic` | 110 | yes |  |
 | `inspect_evals/sec_qa_v1_5_shot` | `choice()` | `deterministic` | 110 | yes |  |
 | `inspect_evals/sec_qa_v2` | `choice()` | `deterministic` | 100 | yes |  |
@@ -308,20 +310,20 @@ Reserves, in order, replacing any of the twenty that fails at run time: `inspect
 | `inspect_evals/simpleqa_verified` | `_resolve_scorer(scorer, SIMPLEQA_VERIFIED_GRADER_TEMPLATE, grade_parse)` | `deterministic_custom` | 1000 | no | network_required |
 | `inspect_evals/sosbench` | `llm_judge_scorer(template=LLM_JUDGE_TEMPLATE)` | `model_graded` | 3000 | no | model_graded |
 | `inspect_evals/squad` | `[f1(), exact()]` | `deterministic` | 11873 | yes |  |
-| `inspect_evals/stereoset` | `[multiple_choice_scorer(), stereoset_scorer()]` | `deterministic_custom` | 4299 | yes |  |
+| `inspect_evals/stereoset` | `[multiple_choice_scorer(), stereoset_scorer()]` | `deterministic_custom` | 2123 | yes |  |
 | `inspect_evals/strong_reject` | `strong_reject_scorer(judge_llm)` | `model_graded` | 324 | no | model_graded |
 | `inspect_evals/swe_bench` | `scorer or swe_bench_scorer()` | `sandbox` | 500 | no | sandbox_required |
 | `inspect_evals/swe_bench_verified_mini` | `scorer or swe_bench_scorer()` | `sandbox` | 50 | no | sandbox_required |
 | `inspect_evals/swe_lancer` | `scorers + [debug_artifact_exporter(base_path=debug_export_path)]` | `sandbox` | 460 | no | sandbox_required |
-| `inspect_evals/sycophancy` | `sycophancy_scorer(scorer_model=scorer_model)` | `model_graded` | 4888 | no | model_graded |
+| `inspect_evals/sycophancy` | `sycophancy_scorer(scorer_model=scorer_model)` | `model_graded` | 4882 | no | model_graded |
 | `inspect_evals/tac` | `tac_scorer()` | `deterministic_custom` | 52 | no | gated_dataset |
 | `inspect_evals/tac_welfare` | `tac_scorer()` | `deterministic_custom` | 52 | no | gated_dataset |
 | `inspect_evals/tau2_airline` | `airline_scorer()` | `deterministic_custom` | 50 | yes |  |
 | `inspect_evals/tau2_banking` | `banking_scorer()` | `deterministic_custom` | 97 | yes |  |
 | `inspect_evals/tau2_retail` | `retail_scorer()` | `deterministic_custom` | 114 | yes |  |
 | `inspect_evals/tau2_telecom` | `telecom_scorer()` | `deterministic_custom` | 114 | yes |  |
-| `inspect_evals/theagentcompany` | `get_scorer_for_task(task_name, scoring_mode=scoring_mode)` | `deterministic_custom` | 34 | no | extra_dependency |
-| `inspect_evals/threecb` | `best_elicitation_per_challenge()` | `deterministic_custom` | 13 | no | sandbox_required |
+| `inspect_evals/theagentcompany` | `get_scorer_for_task(task_name, scoring_mode=scoring_mode)` | `deterministic_custom` | 39 | no | extra_dependency |
+| `inspect_evals/threecb` | `best_elicitation_per_challenge()` | `deterministic_custom` | 35 | no | sandbox_required |
 | `inspect_evals/truthfulqa` | `choice()` | `deterministic` | 817 | yes |  |
 | `inspect_evals/uccb` | `model_graded_qa(template=UCCB_GRADING_TEMPLATE, model=scorer_model)` | `model_graded` | 1039 | no | model_graded |
 | `inspect_evals/usaco` | `verify()` | `deterministic_custom` | 307 | no | sandbox_required |

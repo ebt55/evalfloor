@@ -1,0 +1,42 @@
+$ .venv/Scripts/evalfloor check inspect_evals/paws
+Loading dataset google-research-datasets/paws from Hugging Face...
+Saving the dataset (1/1 shards): 100%|██████████| 8000/8000 [00:00<00:00, 100848.86 examples/s]
+inspect_evals/paws  (inspect_ai 0.3.263, inspect_evals 0.20.0)
+  8000 samples, scorer(s): inspect_ai/includes
+  scorer inspect_ai/includes
+    majority baseline   55.80%  (modal target 'No')
+    uniform baseline    49.57%
+    empty            0.00%  0/8000
+    whitespace       0.00%  0/8000
+    refusal          0.00%  0/8000
+    all_labels     100.00%  8000/8000  <-- at or above majority
+    all_letters      0.00%  0/8000
+    echo            12.12%  970/8000
+    boilerplate      0.00%  0/8000
+    format_only      0.00%  0/8000
+    majority        55.80%  4464/8000
+    uniform         49.57%  19829/40000
+    FLAGGED: all_labels score at or above the majority baseline
+
+inspect_evals/paws: FLAGGED
+
+$ .venv-024/Scripts/evalfloor check inspect_evals/paws
+Loading dataset google-research-datasets/paws from Hugging Face...
+Saving the dataset (1/1 shards): 100%|██████████| 8000/8000 [00:00<00:00, 692786.72 examples/s]
+inspect_evals/paws  (inspect_ai 0.3.263, inspect_evals 0.24.0)
+  8000 samples, scorer(s): inspect_ai/pattern
+  scorer inspect_ai/pattern
+    majority baseline   55.80%  (modal target 'No')
+    uniform baseline    49.57%
+    empty            0.00%  0/8000
+    whitespace       0.00%  0/8000
+    refusal          0.00%  0/8000
+    all_labels       0.00%  0/8000
+    all_letters      0.00%  0/8000
+    echo             0.00%  0/8000
+    boilerplate      0.00%  0/8000
+    format_only      0.00%  0/8000
+    majority        55.80%  4464/8000
+    uniform         49.57%  19829/40000
+
+inspect_evals/paws: clean
