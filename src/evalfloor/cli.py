@@ -28,8 +28,9 @@ from .aggregate import aggregate_run, collision_count, flag_rate, sweep_digest
 from .battery import BATTERY, battery_fingerprint
 from .drive import TaskRun, drive_task_async
 from .report import (
-    NEGATIVE_RESULT_THRESHOLD,
     floors_from_payload,
+    negative_result_threshold,
+    raw_arm_clause,
     read_sweep,
     write_all,
     write_sweep,
@@ -280,6 +281,9 @@ def cmd_sweep(args: argparse.Namespace) -> int:
 
     payload: dict[str, Any] = {
         "schema": 2,
+        # Selects the arm's own preregistered threshold in `report`. Payloads
+        # written before 2026-10-10 carry no key and are read as deterministic.
+        "arm": "deterministic",
         "pins": installed_pins(),
         "battery_fingerprint": battery_fingerprint(),
         "limit": args.limit,
@@ -768,28 +772,35 @@ def cmd_report(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return EXIT_UNRUNNABLE
+    from .rulings import apply_rulings, load_rulings
+
     payload = read_sweep(sweep_path)
     readme = not payload.get("smoke", False) and not args.no_readme
     written = _regenerate(out, pathlib.Path(args.rulings), payload, readme=readme)
     floors = floors_from_payload(payload)
+    after, _, _ = apply_rulings(floors, load_rulings(pathlib.Path(args.rulings)))
     flagged, denom = flag_rate(floors)
-    flagged_raw, _ = flag_rate(floors, arm="raw")
+    flagged_after, _ = flag_rate(after)
     for path in written:
         print(f"wrote {path}")
     print(f"{flagged} of {denom} flagged before rulings (rendered arm)")
-    print(f"{flagged_raw} of {denom} flagged on the raw arm")
     n_collisions = collision_count(floors)
     if n_collisions:
         print(
             f"{n_collisions} of those rest on the format_only/majority template "
             "collision (marked, not removed)"
         )
+    print(f"{flagged_after} of {denom} flagged after rulings (rendered arm)")
+    # The matrix's own sentence, so an arm that never ran prints "not run".
+    print(raw_arm_clause(after, bold=False))
     if payload.get("smoke"):
         print("smoke payload: README.md was not rewritten")
-    if denom and flagged < NEGATIVE_RESULT_THRESHOLD:
+    # Per arm, and against the count the headline reports: after rulings.
+    threshold = negative_result_threshold(payload)
+    if denom and flagged_after < threshold:
         print(
             f"note: below the preregistered negative-result threshold of "
-            f"{NEGATIVE_RESULT_THRESHOLD}"
+            f"{threshold}"
         )
     return EXIT_OK
 

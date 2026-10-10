@@ -11,6 +11,9 @@ keywords = ["evaluation", "inspect-ai", "scorers", "benchmark-validity"]
 # Both pins are load-bearing. inspect_evals 0.20.0 is the newest release in which
 # src/inspect_evals/paws/paws.py still carries `scorer=includes()`; PR #2334 changes
 # that line and is not in any release as of 2026-09-15. See NOTES.md.
+# Corrected 2026-10-10: #2334 merged 2026-09-16 and v0.21.0 (2026-09-17) carries
+# the paws and boolq fix; as of 2026-10-10 the latest release is 0.24.0. 0.20.0
+# stays pinned because the anchor needs the behaviour present.
 dependencies = [
     "inspect_ai==0.3.263",
     "inspect_evals==0.20.0",

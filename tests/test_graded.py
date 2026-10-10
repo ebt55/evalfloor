@@ -1213,3 +1213,426 @@ def test_the_disagreement_control_runs_on_the_task_it_names(tmp_path) -> None:
     assert dis["task"] == target
     assert dis["n_compared"] > 0
     assert "n_uncomparable" in dis
+
+
+# --------------------------------------------------------------------------
+# Defect 009: the graded arm is reported by its own rules
+#
+# Run against the committed payloads, because `report` never re-aggregates: what
+# it prints is decided from what results/graded/sweep.json holds.
+# --------------------------------------------------------------------------
+
+
+def _repo_root():
+    import pathlib
+
+    return pathlib.Path(__file__).resolve().parent.parent
+
+
+def _committed(arm: str = "graded"):
+    """A committed payload, with its floors before and after rulings."""
+    from evalfloor.report import floors_from_payload, read_sweep
+    from evalfloor.rulings import apply_rulings, load_rulings
+
+    root = _repo_root()
+    path = root / "results" / ("graded/sweep.json" if arm == "graded" else "sweep.json")
+    payload = read_sweep(path)
+    before = floors_from_payload(payload)
+    after, _, _ = apply_rulings(before, load_rulings(root / "rulings.jsonl"))
+    return payload, before, after
+
+
+def _committed_readme() -> str:
+    """The README exactly as `evalfloor report --out results` builds it."""
+    from evalfloor.report import readme_arms, render_readme
+    from evalfloor.rulings import load_rulings
+
+    root = _repo_root()
+    payload, _, after = _committed("deterministic")
+    arms = readme_arms(
+        payload, after, root / "results", load_rulings(root / "rulings.jsonl")
+    )
+    inventory = json.loads(
+        (root / "results" / "task_inventory.json").read_text(encoding="utf-8")
+    )
+    return render_readme(
+        arms["floors"],
+        inventory,
+        arms["payload"],
+        graded_floors=arms["graded_floors"],
+        graded_payload=arms["graded_payload"],
+    )
+
+
+GRADED_VERDICT_3_OF_7 = (
+    "3 of 7 flagged at the Wilson lower bound; the arm's preregistered negative "
+    "result (fewer than three) does not hold."
+)
+
+
+def test_graded_arm_uses_threshold_three(tmp_path, capsys) -> None:
+    """Section 8A's threshold is three. The report applied section 1's five to
+    both arms, and so printed "Preregistered negative result ... At 3 of 7, that
+    is the finding" over a result section 8A says is not one."""
+    import copy
+
+    from evalfloor.cli import main
+    from evalfloor.report import (
+        GRADED_NEGATIVE_RESULT_THRESHOLD,
+        NEGATIVE_RESULT_THRESHOLD,
+        graded_verdict,
+        negative_result_threshold,
+        render_matrix,
+        render_readme_graded,
+    )
+
+    payload, before, after = _committed("graded")
+    assert payload["arm"] == "graded"
+    assert flag_rate(after) == (3, 7)
+    assert GRADED_NEGATIVE_RESULT_THRESHOLD == 3
+    assert negative_result_threshold(payload) == 3
+    # A payload with no "arm" predates the key, and is deterministic.
+    assert negative_result_threshold({}) == NEGATIVE_RESULT_THRESHOLD == 5
+    assert negative_result_threshold({"arm": "deterministic"}) == 5
+    with pytest.raises(ValueError):
+        negative_result_threshold({"arm": "no_such_arm"})
+
+    matrix = render_matrix(before, after, payload["digest"], payload)
+    assert "Preregistered negative result" not in matrix
+    assert GRADED_VERDICT_3_OF_7 in matrix
+    assert GRADED_VERDICT_3_OF_7 in "\n".join(render_readme_graded(after, payload))
+
+    # One flag fewer is the negative result section 8A fixed in advance, and the
+    # sentence says so rather than going quiet.
+    fewer = copy.deepcopy(after)
+    for f in fewer:
+        if f.task == "inspect_evals/sosbench":
+            f.flagged, f.flagged_by = False, []
+    assert flag_rate(fewer) == (2, 7)
+    assert "(fewer than three) holds" in render_matrix(before, fewer, "d", payload)
+    assert "does not hold" not in graded_verdict(2, 7)
+
+    # cmd_report picks the threshold the same way: 3 is not below three...
+    (tmp_path / "graded").mkdir()
+    (tmp_path / "graded" / "sweep.json").write_text(
+        json.dumps(payload), encoding="utf-8"
+    )
+
+    def report(rulings) -> str:
+        args = ["report", "--out", str(tmp_path / "graded"), "--rulings", str(rulings)]
+        assert main(args + ["--no-readme"]) == 0
+        return capsys.readouterr().out
+
+    out = report(_repo_root() / "rulings.jsonl")
+    assert "below the preregistered negative-result threshold" not in out
+    assert "0 of 7 flagged on the raw arm" not in out
+    assert "was not run on any of the 7 tasks" in out
+
+    # ...and compares it with the count after rulings, which is the headline's.
+    # Unflagging one task leaves 3 before rulings and 2 after.
+    unflag = tmp_path / "rulings.jsonl"
+    unflag.write_text(
+        json.dumps(
+            {
+                "task": "inspect_evals/sosbench", "action": "unflag",
+                "reason": "fixture", "source": "tests/test_graded.py",
+                "date": "2026-10-10", "author": "test",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    out = report(unflag)
+    assert "3 of 7 flagged before rulings" in out
+    assert "2 of 7 flagged after rulings" in out
+    assert "below the preregistered negative-result threshold of 3" in out
+
+    # And the deterministic arm keeps section 1's five, and never section 8A's.
+    det_payload, det_before, det_after = _committed("deterministic")
+    assert negative_result_threshold(det_payload) == 5
+    det_flagged, _ = flag_rate(det_after)
+    det_matrix = render_matrix(det_before, det_after, det_payload["digest"], det_payload)
+    assert ("Preregistered negative result" in det_matrix) == (det_flagged < 5)
+    assert "Preregistration section 8A" not in det_matrix
+
+
+def test_a_deterministic_sweep_records_its_arm(tmp_path, monkeypatch) -> None:
+    """From 2026-10-10 the deterministic payload names its arm. Nothing is
+    driven here: the sweep itself is stubbed out."""
+    import evalfloor.cli as cli
+
+    monkeypatch.setattr(cli, "_sweep", lambda tasks, limit: ([], []))
+    out = tmp_path / "smoke"
+    assert cli.main(
+        ["sweep", "--tasks", "evalfloor/control_tight", "--out", str(out), "--no-report"]
+    ) == 0
+    payload = json.loads((out / "sweep.json").read_text(encoding="utf-8"))
+    assert payload["arm"] == "deterministic"
+
+
+def test_unrun_raw_arm_prints_not_run() -> None:
+    """The graded arm runs only the rendered arm on a task with no template, so
+    its payload holds majority_raw 0.0 and members_raw {} -- field defaults. The
+    report printed them as a raw "0 of 7", "0.0%" cells and "disagree on 3"."""
+    from evalfloor.report import NOT_RUN, render_matrix, rendering_finding
+
+    payload, before, after = _committed("graded")
+    assert all(f.members_raw == {} and f.majority_raw == 0.0 for f in after), (
+        "the committed payload is the case this pins"
+    )
+
+    matrix = render_matrix(before, after, payload["digest"], payload)
+    raw_line = next(
+        line for line in matrix.splitlines() if line.startswith("Before rulings")
+    )
+    assert "0 of 7" not in raw_line
+    assert f"**{NOT_RUN}**" in raw_line
+    assert "0 of 7" not in matrix
+    assert "disagree on 3" not in matrix
+    assert "disagree on" not in matrix, "nothing was compared"
+    assert "Both defects are written up" not in matrix, "no defect was named"
+
+    section = matrix.split("## What the rendering rule changed")[1].split(
+        "## Every battery member"
+    )[0]
+    rows = [line for line in section.splitlines() if line.startswith("| `")]
+    assert len(rows) == 8
+    for row in rows:
+        cells = [c.strip() for c in row.strip("|").split("|")]
+        # majority raw, best CF raw, flagged raw
+        assert (cells[2], cells[4], cells[6]) == (NOT_RUN, NOT_RUN, NOT_RUN), row
+    assert "- 0.0%" not in section
+
+    raw_table = matrix.split("-- raw arm")[1].split("-- rendered arm")[0]
+    assert "%" not in raw_table, "no raw-arm member score exists to print"
+
+    finding = rendering_finding(after)
+    assert finding is not None
+    assert NOT_RUN in finding
+    assert "rendering rule changed nothing" not in finding, (
+        "that would be a claim about a comparison that was never made"
+    )
+
+    # The deterministic arm ran both, and still reads exactly as it did.
+    import re
+
+    det_payload, det_before, det_after = _committed("deterministic")
+    det = render_matrix(det_before, det_after, det_payload["digest"], det_payload)
+    flagged_raw, denom = flag_rate(det_after, arm="raw")
+    assert f"it is **{flagged_raw} of {denom}**." in det
+    assert re.search(r"The two arms disagree on \d+\.", det)
+    assert "Both defects are written up in `INSTRUMENT_LESSONS.md`." in det
+    assert NOT_RUN not in det
+
+    # Mixed: the raw count covers only the floors it ran on, and says so.
+    mixed = render_matrix(det_after[:2] + after[:1])
+    mixed_line = next(
+        line for line in mixed.splitlines() if line.startswith("Before rulings")
+    )
+    assert f"**{NOT_RUN}** on the other 1" in mixed_line
+    assert "where both ran; the raw arm was not run on the other 1." in mixed
+
+
+def test_a_task_where_nothing_scored_prints_no_result_in_every_table() -> None:
+    """mask: not one grading call succeeded. The graded section printed NO
+    RESULT, and said "never as 0.0%", while the general tables above it printed
+    0.0% for the same task."""
+    from evalfloor.report import NO_RESULT, render_matrix
+
+    payload, before, after = _committed("graded")
+    mask = next(f for f in after if f.task == "inspect_evals/mask")
+    assert mask.nothing_scored is True
+
+    matrix = render_matrix(before, after, payload["digest"], payload)
+    rows = [line for line in matrix.splitlines() if line.startswith("| `inspect_evals/mask` |")]
+
+    def section(start: str, end: str) -> list[str]:
+        body = matrix.split(start)[1].split(end)[0]
+        return [row for row in rows if row in body]
+
+    tables = {
+        "per task, rendered": section("## Per task, rendered arm", "## What the rendering"),
+        "rendering rule": section("## What the rendering rule changed", "## Every battery"),
+        "rendered members": section("every task -- rendered arm", "## Counts, not rates"),
+    }
+    for name, found in tables.items():
+        assert len(found) == 1, name
+        assert NO_RESULT in found[0], name
+        assert "0.0%" not in found[0], f"{name}: {found[0]}"
+    # The two fortress_benign members every call refused are not 0.0% either.
+    benign = next(
+        line
+        for line in matrix.split("every task -- rendered arm")[1].splitlines()
+        if line.startswith("| `inspect_evals/fortress_benign` |")
+    )
+    assert benign.count(NO_RESULT) == 2
+    # Still out of the denominator, and still not a flag.
+    assert flag_rate(after) == (3, 7)
+
+
+def _member_row(text: str, task: str, member: str) -> str:
+    return next(
+        line for line in text.splitlines() if line.startswith(f"| `{task}` | {member} |")
+    )
+
+
+def test_fractional_scores_mark_point_outside_interval() -> None:
+    """The point is the mean of per-item scores; the interval is a Wilson
+    interval on the items that scored the full 1.0. On a grader that scores
+    fractions they measure different things, so both are defined once and a
+    point outside its own interval is marked. The flag rule is unchanged."""
+    from evalfloor.aggregate import MemberScore, TaskFloor
+    from evalfloor.report import POINT_OUTSIDE_MARK, render_graded_section
+
+    def member(name: str, mean: float, correct: int, n: int = 100) -> MemberScore:
+        low, high = wilson_interval(correct, n)
+        return MemberScore(
+            member=name, mean=mean, n_correct=correct, n_scored=n,
+            applicable=True, ci_low=low, ci_high=high,
+        )
+
+    fractional = TaskFloor(
+        task="evalfloor/scale_probe", scorer="evalfloor/fake_judge", n_samples=100,
+        sampled=True, graded=True, grader_model="mockllm/model", majority=0.015,
+        best_member="refusal", best_mean=0.072,
+        members={
+            # moru's shape: no item scored the full 1.0, and the mean is 7.2%
+            "refusal": member("refusal", 0.072, 0),
+            "echo": member("echo", 0.04, 4),
+            "majority": member("majority", 0.015, 1),
+        },
+    )
+    binary = TaskFloor(
+        task="evalfloor/binary_probe", scorer="evalfloor/fake_judge", n_samples=100,
+        sampled=True, graded=True, grader_model="mockllm/model", majority=0.5,
+        best_member="refusal", best_mean=1.0,
+        members={
+            # 100 of 100 against an upper bound computed in floating point
+            "refusal": member("refusal", 1.0, 100),
+            "majority": member("majority", 0.5, 50),
+        },
+    )
+    text = render_graded_section([fractional, binary], {"arm": "graded"})
+
+    definition = "The point and the interval are defined differently"
+    assert text.count(definition) == 1, "stated once"
+    assert text.index(definition) < text.index("| grader | value |"), "above the tables"
+    assert "1 of the 5 member rows" in text
+
+    assert POINT_OUTSIDE_MARK in _member_row(text, "evalfloor/scale_probe", "refusal")
+    assert POINT_OUTSIDE_MARK not in _member_row(text, "evalfloor/scale_probe", "echo")
+    assert POINT_OUTSIDE_MARK not in _member_row(text, "evalfloor/scale_probe", "majority")
+    assert POINT_OUTSIDE_MARK not in _member_row(text, "evalfloor/binary_probe", "refusal")
+
+    per_task = text.split("### Per task")[1].split("### Every member")[0]
+    assert POINT_OUTSIDE_MARK in next(
+        line for line in per_task.splitlines() if "scale_probe" in line
+    )
+    assert POINT_OUTSIDE_MARK not in next(
+        line for line in per_task.splitlines() if "binary_probe" in line
+    )
+
+    # The committed run: the two cases the plan reviews named are marked, and a
+    # clean 100 of 100 is not.
+    payload, _, after = _committed("graded")
+    committed = render_graded_section(after, payload)
+    assert POINT_OUTSIDE_MARK in _member_row(committed, "inspect_evals/moru", "refusal")
+    assert POINT_OUTSIDE_MARK in _member_row(
+        committed, "inspect_evals/fortress_adversarial", "echo"
+    )
+    assert POINT_OUTSIDE_MARK not in _member_row(
+        committed, "inspect_evals/fortress_benign", "refusal"
+    )
+    assert flag_rate(after) == (3, 7), "marking a row changes no flag"
+
+
+def test_provenance_is_read_from_the_payload_not_the_environment(
+    monkeypatch,
+) -> None:
+    """The graded arm ran under 0.20.0 and fingerprint b019ebb6ecee. Provenance
+    read the environment `report` runs in, so after any bump a regenerated file
+    would have stamped a fingerprint the arm never ran under."""
+    import ast
+    import inspect
+
+    import evalfloor
+    import evalfloor.battery
+    import evalfloor.report as report
+    from evalfloor.cli import _load_inventory
+
+    # No live call is left in report.py; mentions in prose are fine.
+    called = {
+        node.func.id if isinstance(node.func, ast.Name) else node.func.attr
+        for node in ast.walk(ast.parse(inspect.getsource(report)))
+        if isinstance(node, ast.Call) and isinstance(node.func, (ast.Name, ast.Attribute))
+    }
+    assert not called & {"installed_pins", "battery_fingerprint"}
+
+    def fake_pins() -> dict[str, str]:
+        return {"inspect_ai": "9.9.9", "inspect_evals": "9.9.9"}
+
+    def fake_fingerprint() -> str:
+        return "deadbeef"
+
+    monkeypatch.setattr(evalfloor, "installed_pins", fake_pins)
+    monkeypatch.setattr(evalfloor.battery, "battery_fingerprint", fake_fingerprint)
+    # On report too, so the test still bites if either name is imported there.
+    monkeypatch.setattr(report, "installed_pins", fake_pins, raising=False)
+    monkeypatch.setattr(report, "battery_fingerprint", fake_fingerprint, raising=False)
+
+    inventory = _load_inventory(_repo_root() / "results")
+    rendered = []
+    for arm in ("graded", "deterministic"):
+        payload, before, after = _committed(arm)
+        if arm == "graded":
+            # The graded arm is not re-run, so these stay what it ran under.
+            assert payload["pins"]["inspect_evals"] == "0.20.0"
+            assert payload["battery_fingerprint"] == "b019ebb6ecee"
+        matrix = report.render_matrix(before, after, payload["digest"], payload)
+        coverage = report.render_coverage(
+            inventory or [], payload["tasks"], after, payload["digest"], payload
+        )
+        for text in (matrix, coverage):
+            if arm == "graded":
+                assert "| `inspect_evals` | 0.20.0 |" in text
+                assert "| battery fingerprint | `b019ebb6ecee` |" in text
+            assert f"| `inspect_ai` | {payload['pins']['inspect_ai']} |" in text
+            assert f"| `inspect_evals` | {payload['pins']['inspect_evals']} |" in text
+            assert (
+                f"| battery fingerprint | `{payload['battery_fingerprint']}` |" in text
+            )
+        rendered += [matrix, coverage]
+    det_payload, _, _ = _committed("deterministic")
+    readme = _committed_readme()
+    assert f"battery fingerprint `{det_payload['battery_fingerprint']}`" in readme
+    rendered.append(readme)
+
+    for text in rendered:
+        assert "9.9.9" not in text
+        assert "deadbeef" not in text
+
+    # A payload that recorded nothing says so; it is not filled in from here.
+    block = "\n".join(report.provenance_block({}))
+    assert block.count(report.NOT_RECORDED) == 3
+    assert "9.9.9" not in block and "deadbeef" not in block
+
+
+def test_readme_says_the_fix_merged_and_dates_the_latest_release() -> None:
+    """#2334 merged on 2026-09-16. The README said it was "in flight" and "not
+    merged", and called 0.20.0 "the latest release" with no date."""
+    import re
+
+    for text in (
+        _committed_readme(),
+        (_repo_root() / "README.md").read_text(encoding="utf-8"),
+    ):
+        assert "not merged" not in text
+        assert "in flight" not in text
+        assert "merged 2026-09-16" in text
+        assert "the v0.21.0 release notes (2026-09-17) list the `paws` and `boolq` fix" in text
+        assert "The anchor stays on 0.20.0, where the behaviour is present." in text
+        assert "as of 2026-10-10 the latest release is 0.24.0" in text
+        # A "latest release" is only ever true on a day, so it always carries one.
+        assert len(re.findall(r"latest release", text)) == len(
+            re.findall(r"as of \d{4}-\d{2}-\d{2} the latest release", text)
+        )

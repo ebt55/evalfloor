@@ -15,9 +15,9 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 from typing import Any, Sequence
 
-from . import installed_pins
 from .aggregate import TaskFloor, collision_count, flag_rate
 from .battery import (
     ARMS,
@@ -27,7 +27,6 @@ from .battery import (
     FORMAT_ONLY_TEXT,
     REFERENCE_NAMES,
     REFUSAL_TEXT,
-    battery_fingerprint,
 )
 from .rulings import AppliedRuling, Ruling
 
@@ -38,7 +37,36 @@ GENERATED_BANNER = (
 
 #: Fewer than this many flagged reachable tasks is the preregistered negative
 #: result: the collection is tighter than the single known case suggested.
+#: PREREGISTRATION.md section 1.
 NEGATIVE_RESULT_THRESHOLD = 5
+
+#: The model-graded arm's own threshold, fixed separately in section 8A because
+#: its denominator is 8, not 58. Until 2026-10-10 the report applied the five
+#: above to both arms, and so printed "Preregistered negative result" over a
+#: graded 3 of 7 that section 8A says is not one. Instrument defect 009.
+GRADED_NEGATIVE_RESULT_THRESHOLD = 3
+
+#: One threshold per arm, keyed by the payload's ``"arm"``.
+NEGATIVE_RESULT_THRESHOLDS: dict[str, int] = {
+    "deterministic": NEGATIVE_RESULT_THRESHOLD,
+    "graded": GRADED_NEGATIVE_RESULT_THRESHOLD,
+}
+
+#: What a cell prints for an arm that was never scored. Never ``0.0%``.
+NOT_RUN = "not run"
+
+#: What a cell prints where the arm ran but not one item scored. Never ``0.0%``.
+NO_RESULT = "NO RESULT"
+
+#: What provenance prints for a field the payload does not carry. Never filled
+#: in from the environment ``report`` happens to run in.
+NOT_RECORDED = "not recorded"
+
+#: Beside an interval whose own point estimate falls outside it.
+POINT_OUTSIDE_MARK = "**point outside**"
+
+_NUMBER_WORDS = ("zero", "one", "two", "three", "four", "five", "six", "seven",
+                 "eight", "nine", "ten")
 
 #: Exclusion reasons, with the plain-English meaning printed beside each count.
 EXCLUSION_MEANINGS: dict[str, str] = {
@@ -54,7 +82,10 @@ EXCLUSION_MEANINGS: dict[str, str] = {
 }
 
 
-def _pct(x: float) -> str:
+def _pct(x: float | None) -> str:
+    # None is an arm that was never scored, which is not a score of zero.
+    if x is None:
+        return NOT_RUN
     return f"{100 * x:.1f}%"
 
 
@@ -62,22 +93,149 @@ def _esc(text: Any) -> str:
     return str(text).replace("|", "\\|").replace("\n", " ")
 
 
+def _spelled(n: int) -> str:
+    return _NUMBER_WORDS[n] if 0 <= n < len(_NUMBER_WORDS) else str(n)
+
+
+def payload_arm(payload: dict[str, Any] | None) -> str:
+    """The arm a payload came from. A payload with no ``"arm"`` is deterministic:
+    until 2026-10-10 only ``cmd_graded`` wrote the key."""
+    return (payload or {}).get("arm") or "deterministic"
+
+
+def negative_result_threshold(payload: dict[str, Any] | None) -> int:
+    """The preregistered negative-result threshold for this payload's arm."""
+    arm = payload_arm(payload)
+    if arm not in NEGATIVE_RESULT_THRESHOLDS:
+        raise ValueError(f"no preregistered negative-result threshold for arm {arm!r}")
+    return NEGATIVE_RESULT_THRESHOLDS[arm]
+
+
+def graded_verdict(
+    flagged: int, denom: int, threshold: int = GRADED_NEGATIVE_RESULT_THRESHOLD
+) -> str:
+    """Section 8A's verdict as one sentence, generated either way it falls."""
+    head = (
+        f"{flagged} of {denom} flagged at the Wilson lower bound; the arm's "
+        f"preregistered negative result (fewer than {_spelled(threshold)})"
+    )
+    if flagged < threshold:
+        return (
+            f"{head} holds: model-graded scoring in this collection has no "
+            "content-free floor above chance."
+        )
+    return f"{head} does not hold."
+
+
+def _raw_ran(floor: TaskFloor) -> bool:
+    """Was the raw arm scored on this floor at all?
+
+    The graded arm skips it where a task declares no answer template
+    (``graded.arms_for_template``), and its payload then carries
+    ``majority_raw: 0.0`` and ``members_raw: {}`` -- field defaults, not
+    measurements. ``report`` rebuilds floors from the payload and never
+    re-aggregates, so this is decided here, at render time. Printing those
+    defaults as a raw "0 of 7", "0.0%" and "disagree on 3" was half of
+    instrument defect 009.
+    """
+    return bool(floor.members_raw)
+
+
+def _scored(floors: Sequence[TaskFloor]) -> list[TaskFloor]:
+    return [f for f in floors if f.error is None and f.members and not f.nothing_scored]
+
+
+def _raw_not_run_reason(floors: Sequence[TaskFloor]) -> str:
+    if floors and all(f.answer_template == "bare" for f in floors):
+        return (
+            "none of those tasks declares an answer template, so both arms would "
+            "score the same strings and only the rendered arm was scored"
+        )
+    return "the sweep payload carries no raw-arm score for those tasks"
+
+
+def raw_arm_clause(floors: Sequence[TaskFloor], bold: bool = True) -> str:
+    """The raw arm's count as one sentence, or "not run" where it never ran."""
+    b = "**" if bold else ""
+    gloss = "members written plainly, ignoring each task's answer template"
+    scored = _scored(floors)
+    ran = [f for f in scored if _raw_ran(f)]
+    ran_tasks = {f.task for f in ran}
+    unrun = [f for f in scored if f.task not in ran_tasks]
+    n_unrun = len({f.task for f in unrun})
+    flagged_raw, denom_raw = flag_rate(ran, arm="raw")
+    if not unrun:
+        return f"On the raw arm -- {gloss} -- it is {b}{flagged_raw} of {denom_raw}{b}."
+    reason = _raw_not_run_reason(unrun)
+    if not ran:
+        return (
+            f"The raw arm -- {gloss} -- was {b}{NOT_RUN}{b} on any of the {n_unrun} "
+            f"tasks: {reason}."
+        )
+    return (
+        f"On the raw arm -- {gloss} -- it is {b}{flagged_raw} of {denom_raw}{b}; it "
+        f"was {b}{NOT_RUN}{b} on the other {n_unrun}: {reason}."
+    )
+
+
+def _point_outside(score: Any) -> bool:
+    """Does this member's point estimate fall outside its own interval?
+
+    The point is the mean of the per-item scores, which a grader that scores on
+    a scale returns as fractions. The interval is a Wilson interval on the count
+    of items that scored the full 1.0. On fractional scores the two measure
+    different things, and the point can sit outside the interval.
+    """
+    if score is None or score.ci_low is None or score.ci_high is None:
+        return False
+    if score.n_scored == 0:
+        return False
+    # A float tolerance, so 100 of 100 against an upper bound of 0.9999... is
+    # not marked.
+    return score.mean < score.ci_low - 1e-9 or score.mean > score.ci_high + 1e-9
+
+
 def provenance_block(
-    digest: str | None = None, extra: dict[str, Any] | None = None
+    payload: dict[str, Any] | None,
+    digest: str | None = None,
+    extra: dict[str, Any] | None = None,
 ) -> list[str]:
-    pins = installed_pins()
+    """The pins and fingerprint this arm ran under, as its payload recorded them.
+
+    These used to be read from ``installed_pins()`` and ``battery_fingerprint()``
+    -- the environment ``report`` runs in, not the one the sweep ran in. Any bump
+    would then have stamped a regenerated file with a fingerprint its numbers
+    were never measured under. Instrument defect 009.
+    """
+    payload = payload or {}
+    pins = payload.get("pins") or {}
+    fingerprint = payload.get("battery_fingerprint")
     lines = [
         "| provenance | value |",
         "|---|---|",
-        f"| `inspect_ai` | {pins.get('inspect_ai')} |",
-        f"| `inspect_evals` | {pins.get('inspect_evals')} |",
-        f"| battery fingerprint | `{battery_fingerprint()}` |",
+        f"| `inspect_ai` | {pins.get('inspect_ai') or NOT_RECORDED} |",
+        f"| `inspect_evals` | {pins.get('inspect_evals') or NOT_RECORDED} |",
+        "| battery fingerprint | "
+        + (f"`{fingerprint}`" if fingerprint else NOT_RECORDED)
+        + " |",
     ]
     if digest:
         lines.append(f"| sweep digest | `{digest[:16]}` |")
     for k, v in (extra or {}).items():
         lines.append(f"| {k} | {v} |")
     return lines
+
+
+def _measured_on(payload: dict[str, Any] | None) -> str:
+    """One arm's pins and fingerprint as prose, from its payload."""
+    payload = payload or {}
+    pins = payload.get("pins") or {}
+    fingerprint = payload.get("battery_fingerprint")
+    return (
+        f"`inspect_ai` {pins.get('inspect_ai') or NOT_RECORDED} and `inspect_evals` "
+        f"{pins.get('inspect_evals') or NOT_RECORDED}, battery fingerprint "
+        + (f"`{fingerprint}`" if fingerprint else NOT_RECORDED)
+    )
 
 
 def _prereg_block(payload: dict[str, Any]) -> list[str]:
@@ -118,7 +276,7 @@ def render_matrix(
     payload = payload or {}
     flagged_before, denom = flag_rate(floors_before)
     flagged_after, _ = flag_rate(floors_after)
-    flagged_raw, _ = flag_rate(floors_after, arm="raw")
+    threshold = negative_result_threshold(payload)
 
     lines: list[str] = ["# Floor matrix", "", GENERATED_BANNER, ""]
 
@@ -134,9 +292,8 @@ def render_matrix(
         )
         lines.append("")
         lines.append(
-            f"Before rulings the count was **{flagged_before} of {denom}**. On the raw "
-            f"arm -- members written plainly, ignoring each task's answer template -- "
-            f"it is **{flagged_raw} of {denom}**. The headline uses the rendered arm, "
+            f"Before rulings the count was **{flagged_before} of {denom}**. "
+            f"{raw_arm_clause(floors_after)} The headline uses the rendered arm, "
             "as preregistered. `coverage.md` says what is not in this denominator."
         )
         n_collisions = collision_count(floors_after)
@@ -151,11 +308,18 @@ def render_matrix(
                 "silently counted; the marked rows carry **yes** in the `collision` "
                 "column below."
             )
-        if flagged_after < NEGATIVE_RESULT_THRESHOLD:
+        if payload_arm(payload) == "graded":
+            # Section 8A's rule, not section 1's, and stated whichever way it falls.
+            lines.append("")
+            lines.append(
+                "> **Preregistration section 8A.** "
+                + graded_verdict(flagged_after, denom, threshold)
+            )
+        elif flagged_after < threshold:
             lines.append("")
             lines.append(
                 f"> **Preregistered negative result.** Fewer than "
-                f"{NEGATIVE_RESULT_THRESHOLD} flagged tasks was fixed in advance as "
+                f"{threshold} flagged tasks was fixed in advance as "
                 f"the threshold at which the finding is that the collection is "
                 f"tighter than the single known case suggested. At {flagged_after} "
                 f"of {denom}, that is the finding."
@@ -163,7 +327,7 @@ def render_matrix(
     lines.append("")
     lines.extend(_prereg_block(payload))
     lines.append("")
-    lines.extend(provenance_block(digest))
+    lines.extend(provenance_block(payload, digest))
     lines.append("")
 
     lines.append("## What a flag means")
@@ -200,6 +364,14 @@ def render_matrix(
                 f"{_esc(f.error)[:60]} | - |"
             )
             continue
+        if f.nothing_scored:
+            # Not one item scored, so there is no floor here to print as 0.0%.
+            lines.append(
+                f"| `{f.task}` | `{_esc(f.scorer)}` | {f.answer_template} | "
+                f"{f.n_samples} | {NO_RESULT} | {NO_RESULT} | - | {NO_RESULT} | - | "
+                "not measured | - |"
+            )
+            continue
         uniform = _pct(f.uniform) if f.uniform is not None else "n/a"
         flagged = ", ".join(f.flagged_by) if f.flagged else "no"
         if f.ruling:
@@ -230,12 +402,20 @@ def render_matrix(
 
     lines.append("## What the rendering rule changed")
     lines.append("")
-    lines.append(
-        "Every member is defined semantically and then written down in the task's own "
-        "answer template when it declares one. Both forms are scored. On a task that "
-        "declares no template the two arms are identical by construction, and the rows "
-        "below show that rather than asserting it."
-    )
+    if any(_raw_ran(f) for f in floors_after if not f.error):
+        lines.append(
+            "Every member is defined semantically and then written down in the task's "
+            "own answer template when it declares one. Both forms are scored. On a task "
+            "that declares no template the two arms are identical by construction, and "
+            "the rows below show that rather than asserting it."
+        )
+    else:
+        lines.append(
+            "Every member is defined semantically and then written down in the task's "
+            "own answer template when it declares one. On a task that declares no "
+            "template the two arms are identical by construction. This sweep scored "
+            f"only the rendered form, so every raw cell below reads `{NOT_RUN}`."
+        )
     lines.append("")
     lines.append(
         "| task | template | majority raw | majority rendered | best CF raw | "
@@ -244,31 +424,61 @@ def render_matrix(
     lines.append("|" + "---|" * 8)
     templated_tasks = 0
     disagreements = 0
+    compared = 0
     for f in floors_after:
         if f.error:
             continue
         if f.answer_template != "bare":
             templated_tasks += 1
-        if f.flagged_raw != f.flagged:
-            disagreements += 1
+        if not _raw_ran(f):
+            majority_raw = best_raw = flagged_raw = _pct(None)
+        elif f.nothing_scored:
+            compared += 1
+            majority_raw = best_raw = NO_RESULT
+            flagged_raw = "not measured"
+        else:
+            compared += 1
+            if f.flagged_raw != f.flagged:
+                disagreements += 1
+            majority_raw = _pct(f.majority_raw)
+            best_raw = f"{f.best_member_raw or '-'} {_pct(f.best_mean_raw)}"
+            flagged_raw = "yes" if f.flagged_raw else "no"
+        if f.nothing_scored:
+            majority, best, flagged = NO_RESULT, NO_RESULT, "not measured"
+        else:
+            majority = _pct(f.majority)
+            best = f"{f.best_member or '-'} {_pct(f.best_mean)}"
+            flagged = "yes" if f.flagged else "no"
         lines.append(
-            f"| `{f.task}` | {f.answer_template} | {_pct(f.majority_raw)} | "
-            f"{_pct(f.majority)} | {f.best_member_raw or '-'} "
-            f"{_pct(f.best_mean_raw)} | {f.best_member or '-'} {_pct(f.best_mean)} | "
-            f"{'yes' if f.flagged_raw else 'no'} | {'yes' if f.flagged else 'no'} |"
+            f"| `{f.task}` | {f.answer_template} | {majority_raw} | "
+            f"{majority} | {best_raw} | {best} | {flagged_raw} | {flagged} |"
         )
     lines.append("")
     scored_tasks = len([f for f in floors_after if not f.error])
+    if compared == scored_tasks:
+        compare_line = f"The two arms disagree on {disagreements}."
+    elif compared == 0:
+        compare_line = (
+            f"The raw arm was {NOT_RUN} on any of them, so there is no second arm "
+            "to compare."
+        )
+    else:
+        compare_line = (
+            f"The two arms disagree on {disagreements} of the {compared} where both "
+            f"ran; the raw arm was {NOT_RUN} on the other {scored_tasks - compared}."
+        )
     lines.append(
         f"{templated_tasks} of {scored_tasks} tasks here declare an answer template. "
-        f"The two arms disagree on {disagreements}."
+        + compare_line
     )
     finding = rendering_finding(floors_after)
     if finding:
         lines.append("")
         lines.append(finding)
-        lines.append("")
-        lines.append("Both defects are written up in `INSTRUMENT_LESSONS.md`.")
+        if re.search(r"\bdefect \d{3}\b", finding):
+            # Only where the paragraph above actually named one.
+            lines.append("")
+            lines.append("Both defects are written up in `INSTRUMENT_LESSONS.md`.")
     lines.append("")
 
     members = list(CONTENT_FREE_NAMES) + list(REFERENCE_NAMES)
@@ -280,6 +490,13 @@ def render_matrix(
         for f in floors_after:
             if f.error:
                 continue
+            if arm == "raw" and not _raw_ran(f):
+                lines.append(
+                    f"| `{f.task}` | `{_esc(f.scorer)}` | "
+                    + " | ".join([NOT_RUN] * len(members))
+                    + " |"
+                )
+                continue
             source = f.members_raw if arm == "raw" else f.members
             cells: list[str] = []
             for name in members:
@@ -288,6 +505,9 @@ def render_matrix(
                     cells.append("-")
                 elif not score.applicable:
                     cells.append("n/a")
+                elif score.n_scored == 0:
+                    # Every call refused, errored or was ungradeable: no rate.
+                    cells.append(NO_RESULT)
                 else:
                     cells.append(_pct(score.mean))
             lines.append(
@@ -362,12 +582,20 @@ def rendering_finding(floors: Sequence[TaskFloor]) -> str | None:
     """The instrument finding behind the rendering rule, stated plainly.
 
     Generated rather than written, so it cannot drift from the table above it.
+    It reads only floors the raw arm was scored on: comparing the rendered arm
+    with a raw arm that never ran would be reading field defaults as a result.
     """
-    scored = [
-        f for f in floors if f.error is None and f.members and not f.nothing_scored
-    ]
-    if not scored:
+    all_scored = _scored(floors)
+    if not all_scored:
         return None
+    scored = [f for f in all_scored if _raw_ran(f)]
+    unrun = [f for f in all_scored if not _raw_ran(f)]
+    if not scored:
+        return (
+            f"**What this table is showing.** Nothing. The raw arm was {NOT_RUN} on "
+            f"any of the {len(unrun)} task(s) here: {_raw_not_run_reason(unrun)}. "
+            "There is no second arm to compare the rendered one with."
+        )
     templated = [f for f in scored if f.answer_template != "bare"]
 
     collapsed = [f for f in templated if f.majority_raw == 0.0 and f.majority > 0.0]
@@ -411,6 +639,11 @@ def rendering_finding(floors: Sequence[TaskFloor]) -> str | None:
             "No task here declares an answer template, so the raw and rendered arms "
             "are identical by construction and the rendering rule changed nothing."
         )
+    if unrun:
+        parts.append(
+            f"The raw arm was {NOT_RUN} on {len(unrun)} further task(s), which this "
+            "paragraph leaves out."
+        )
     return " ".join(parts)
 
 
@@ -418,10 +651,13 @@ def _first_error(floor: TaskFloor) -> str:
     return floor.first_error or floor.error or "not recorded"
 
 
-def _ci(score: Any) -> str:
+def _ci(score: Any, mark: bool = False) -> str:
     if score is None or score.ci_low is None or score.ci_high is None:
         return "-"
-    return f"[{100 * score.ci_low:.1f}, {100 * score.ci_high:.1f}]"
+    cell = f"[{100 * score.ci_low:.1f}, {100 * score.ci_high:.1f}]"
+    if mark and _point_outside(score):
+        cell += f" {POINT_OUTSIDE_MARK}"
+    return cell
 
 
 def render_graded_section(floors: Sequence[TaskFloor], payload: dict[str, Any]) -> str:
@@ -443,6 +679,27 @@ def render_graded_section(floors: Sequence[TaskFloor], payload: dict[str, Any]) 
         "point estimate: a task is flagged only when its floor clears chance even at "
         "the pessimistic end. These numbers are never added to the deterministic "
         "arm's to make a combined rate."
+    )
+    lines.append("")
+    member_rows = [
+        f.members[name]
+        for f in graded_floors
+        for name in list(CONTENT_FREE_NAMES) + list(REFERENCE_NAMES)
+        if name in f.members and f.members[name].applicable
+    ]
+    n_outside = sum(1 for score in member_rows if _point_outside(score))
+    lines.append(
+        "**The point and the interval are defined differently, and both are used "
+        "below.** The **point** -- the `score` and `best content-free` columns -- is "
+        "the mean of the per-item scores, and a grader that scores on a scale "
+        "returns fractions between 0 and 1. The **interval** -- the `95% CI` column "
+        "-- is a Wilson interval on `correct` of `scored`, where `correct` counts "
+        "only the items that scored the full 1.0. Where every item scores 0 or 1 "
+        "the two agree. Where items score fractions they measure different things, "
+        "so a point can sit outside its own interval; such a row carries "
+        f"{POINT_OUTSIDE_MARK} in its `95% CI` cell, and here that is "
+        f"{n_outside} of the {len(member_rows)} member rows. The flag rule is "
+        "unchanged and reads the interval's lower bound."
     )
     lines.append("")
 
@@ -512,7 +769,7 @@ def render_graded_section(floors: Sequence[TaskFloor], payload: dict[str, Any]) 
         lines.append(
             f"| `{f.task}` | `{_esc(f.scorer)}` | {f.n_samples} | "
             f"`{_esc(f.grader_model)}` | {_pct(f.majority)} | "
-            f"{f.best_member or '-'} {_pct(f.best_mean)} | {_ci(best)} | "
+            f"{f.best_member or '-'} {_pct(f.best_mean)} | {_ci(best, mark=True)} | "
             f"{f.n_refusals} | {', '.join(f.flagged_by) if f.flagged else 'no'} |"
         )
     if not graded_floors:
@@ -588,7 +845,7 @@ def render_graded_section(floors: Sequence[TaskFloor], payload: dict[str, Any]) 
                 continue
             cell = "NO RESULT" if score.n_scored == 0 else _pct(score.mean)
             lines.append(
-                f"| `{f.task}` | {name} | {cell} | {_ci(score)} | "
+                f"| `{f.task}` | {name} | {cell} | {_ci(score, mark=True)} | "
                 f"{score.n_correct} | {score.n_scored} | {score.n_refusals} | "
                 f"{score.n_unmapped} | `{_esc(score.example_completion[:40])}` |"
             )
@@ -705,7 +962,7 @@ def render_coverage(
     lines.append("")
     lines.extend(_prereg_block(payload))
     lines.append("")
-    lines.extend(provenance_block(digest))
+    lines.extend(provenance_block(payload, digest))
     lines.append("")
 
     lines.append("## Totals")
@@ -903,6 +1160,19 @@ INSTRUMENT_DEFECT_ROWS: tuple[tuple[str, str, str], ...] = (
         "the judge-disagreement figure and the pinned cost line published in "
         "255eb3a, both measured under routing that was never recorded",
     ),
+    (
+        "009",
+        "the report applied the deterministic arm's rules to the graded arm",
+        "the graded verdict sentence, and three published numbers for an arm that "
+        'did not run (the raw "0 of 7", the raw "0.0%" cells, "disagree on 3"); no '
+        "measured number",
+    ),
+    (
+        "010",
+        "an unseeded choice shuffle made the first sweep non-reproducible",
+        "the reproducibility of the published count, and with it the section 1 "
+        "verdict on 0.20.0: 4 is under five, 5 is not",
+    ),
 )
 
 
@@ -995,6 +1265,9 @@ def render_readme_graded(
         "Full tables in [`results/graded/floor_matrix.md`]"
         "(results/graded/floor_matrix.md)."
     )
+    if denom and payload_arm(payload) == "graded":
+        lines.append("")
+        lines.append(graded_verdict(flagged, denom, negative_result_threshold(payload)))
     lines.append("")
     lines.append(
         f"Judged by `{_esc(grader.get('model', 'unknown'))}`. "
@@ -1037,11 +1310,13 @@ def render_readme(
     claimed yet. ``evalfloor report`` fills it from ``results/sweep.json``.
     """
     payload = payload or {}
-    pins = installed_pins()
+    # Each arm's pins and fingerprint as its own payload recorded them, never the
+    # environment this report runs in. Instrument defect 009.
+    measured_on = _measured_on(payload)
+    graded_measured_on = _measured_on(graded_payload) if graded_payload else None
 
     if floors and inventory:
         flagged, denom = flag_rate(floors)
-        flagged_raw, _ = flag_rate(floors, arm="raw")
         reachable = sum(1 for row in inventory if row["reachable"])
         headline = (
             f"**{flagged} of {denom} tasks** swept have at least one content-free "
@@ -1049,10 +1324,7 @@ def render_readme(
             f"Of the whole collection, **{reachable} of {len(inventory)}** declared "
             "tasks are reachable for this sweep at all."
         )
-        secondary = (
-            f"On the raw arm -- members written plainly, ignoring each task's answer "
-            f"template -- it is {flagged_raw} of {denom}."
-        )
+        secondary = raw_arm_clause(floors, bold=False)
         n_collisions = collision_count(floors)
         if n_collisions:
             secondary += (
@@ -1116,16 +1388,12 @@ def render_readme(
         '`"yesno"` scores 8000 of 8000 on the `paws` eval, because the eval is scored '
         "with `includes()` and both labels are substrings of that constant. **That "
         "finding is theirs, not this project's.** eval-floor generalises it, asking "
-        "the same question mechanically of every task in the collection. A fix is in "
-        "flight: PR "
+        "the same question mechanically of every task in the collection. "
+        # Dated, because "the latest release" is only ever true on a day.
         "[#2334](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2334) by "
-        "**jkopczyn** replaces the `paws` and `boolq` scorers with anchored patterns, "
-        "and a maintainer comment from **MattFisher** dated 2026-09-09 calls it "
-        '"merge-ready" -- but it carries no approving GitHub review, it is **not '
-        "merged**, and no release contains it. `paws` in `inspect_evals` "
-        f"{pins.get('inspect_evals')}, the latest release, still reads "
-        "`scorer=includes()`. That is why this repository pins that version: the "
-        "anchor has to run against a version where the behaviour is still present. "
+        "**jkopczyn** merged 2026-09-16; the v0.21.0 release notes (2026-09-17) list "
+        "the `paws` and `boolq` fix; as of 2026-10-10 the latest release is 0.24.0. "
+        "The anchor stays on 0.20.0, where the behaviour is present. "
         "`tests/test_paws_regression.py` reproduces it from committed code."
     )
     lines.append("")
@@ -1184,9 +1452,15 @@ def render_readme(
         "number without saying the underlying task is easy. **No claim is made about "
         "the conclusions of any published paper** that used any of these evals. |"
     )
+    if graded_measured_on is None or graded_measured_on == measured_on:
+        pinned = f"everything here is measured on {measured_on}"
+    else:
+        pinned = (
+            f"the deterministic arm is measured on {measured_on}, and the "
+            f"model-graded arm on {graded_measured_on}"
+        )
     lines.append(
-        f"| One version pin | everything here is measured on `inspect_ai` "
-        f"{pins.get('inspect_ai')} and `inspect_evals` {pins.get('inspect_evals')}. "
+        f"| One version pin | {pinned}, as each arm's `sweep.json` recorded it. "
         "Rows from different versions are never mixed; on any bump the whole sweep "
         "re-runs. |"
     )

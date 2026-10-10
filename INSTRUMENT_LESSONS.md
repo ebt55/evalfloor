@@ -244,3 +244,47 @@ One row per defect. Newest last.
 * **Pinned by** `tests/test_graded.py::test_provider_pinning_is_requested`,
   `::test_the_serving_provider_is_recorded_not_inferred` and
   `::test_the_routing_probe_retries_before_reporting_nothing`.
+
+## 009 -- the report applied the deterministic arm's rules to the graded arm
+
+* **Caught** 2026-10-09 (plan reviews); confirmed against the code 2026-10-10.
+* **Symptom** `results/graded/floor_matrix.md` printed "Preregistered negative
+  result" at 3 of 7 when §8A's rule is fewer than three; it printed a raw-arm
+  "0 of 7", "0.0%" and "disagree on 3" for an arm that never ran; `mask`, where
+  nothing scored, printed 0.0% in the general tables while the same file said
+  such a task is written as `NO RESULT`, never as 0.0%; points sat outside their
+  intervals with no statement that the two use different definitions;
+  provenance stamped the live environment's pins and fingerprint, not the run's.
+* **Cause** one `NEGATIVE_RESULT_THRESHOLD` and renderers written for the
+  deterministic arm; provenance read from `installed_pins()` and
+  `battery_fingerprint()`.
+* **What it invalidated** the graded verdict sentence, and three published
+  numbers for an arm that did not run (the raw "0 of 7", the raw "0.0%" cells,
+  "disagree on 3"); no measured number.
+* **Fix** a threshold per arm; "not run" decided at render time; both
+  definitions printed; provenance from the payload.
+* **Pinned by** the four Part A tests:
+  `tests/test_graded.py::test_graded_arm_uses_threshold_three`,
+  `::test_unrun_raw_arm_prints_not_run`,
+  `::test_fractional_scores_mark_point_outside_interval` and
+  `::test_provenance_is_read_from_the_payload_not_the_environment`; and
+  `::test_a_task_where_nothing_scored_prints_no_result_in_every_table`.
+
+## 010 -- an unseeded choice shuffle made the first sweep non-reproducible
+
+* **Caught** 2026-10-09, from the three 17 Sep sweep logs.
+* **Symptom** three runs, three digests (`9e59172a3b43b7e6`,
+  `e752f3acc44ced3d`, `1872230ce615e5ce`); the 02:38 run counted 4 of 20 with 3
+  collision ties, the 06:48 and 11:32 runs 5 of 20 with 4. The difference is
+  `truthfulqa`, clean in one run and a collision tie in the others.
+* **Cause** `truthfulqa` passes `shuffle=True, shuffle_choices=True`:
+  HuggingFace shuffles samples from numpy's global state and the choice shuffle
+  uses `random.Random(None)`. 004's sort by id fixes sample order, not choice
+  order. The determinism control ran `SMOKE_TASKS`, which exclude `truthfulqa`.
+* **What it invalidated** the reproducibility of the published count, and with
+  it the §1 verdict on 0.20.0: 4 is under five, 5 is not. The published README
+  shows a 5-of-20 run.
+* **Fix** in Part B: the harness makes the call upstream adopted (#2404, #2406;
+  reported by MattFisher as #2399 and #2400, fixed 2026-10-09, after 0.24.0),
+  and the determinism control runs the whole list in two processes.
+* **Pinned by** the seeded-shuffle tests (B4).

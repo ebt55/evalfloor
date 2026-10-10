@@ -18,6 +18,8 @@ Preregistration `PREREGISTRATION.md` was committed at `912345f8d5be` **before** 
 
 **3 of 7** model-graded tasks have a content-free floor that clears their own majority baseline **at the Wilson 95% lower bound** -- a stricter rule than the deterministic arm's, because these rates are over a capped sample of 100 items per task per member rather than a whole dataset. This number is **never added** to the one above: the two arms have different denominators, different rules and different costs. Full tables in [`results/graded/floor_matrix.md`](results/graded/floor_matrix.md).
 
+3 of 7 flagged at the Wilson lower bound; the arm's preregistered negative result (fewer than three) does not hold.
+
 Judged by `openai/gpt-5.6-luna`. 
 
 Judge-disagreement control on `inspect_evals/coconot`, against `openrouter/z-ai/glm-5.3-flash`: **82 of 856** comparable cells flip on a change of judge = 9.6% [7.8%, 11.7%]. That bounds the judge noise in every graded figure above; it does not remove it.
@@ -28,7 +30,7 @@ A scorer in Inspect is a function of a completion and a target. It does not care
 
 ## The case that started it
 
-Inspect Evals issue [#2331](https://github.com/UKGovernmentBEIS/inspect_evals/issues/2331) was opened on 2026-08-31 by **caiotheodoro**, who found that the constant string `"yesno"` scores 8000 of 8000 on the `paws` eval, because the eval is scored with `includes()` and both labels are substrings of that constant. **That finding is theirs, not this project's.** eval-floor generalises it, asking the same question mechanically of every task in the collection. A fix is in flight: PR [#2334](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2334) by **jkopczyn** replaces the `paws` and `boolq` scorers with anchored patterns, and a maintainer comment from **MattFisher** dated 2026-09-09 calls it "merge-ready" -- but it carries no approving GitHub review, it is **not merged**, and no release contains it. `paws` in `inspect_evals` 0.20.0, the latest release, still reads `scorer=includes()`. That is why this repository pins that version: the anchor has to run against a version where the behaviour is still present. `tests/test_paws_regression.py` reproduces it from committed code.
+Inspect Evals issue [#2331](https://github.com/UKGovernmentBEIS/inspect_evals/issues/2331) was opened on 2026-08-31 by **caiotheodoro**, who found that the constant string `"yesno"` scores 8000 of 8000 on the `paws` eval, because the eval is scored with `includes()` and both labels are substrings of that constant. **That finding is theirs, not this project's.** eval-floor generalises it, asking the same question mechanically of every task in the collection. [#2334](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2334) by **jkopczyn** merged 2026-09-16; the v0.21.0 release notes (2026-09-17) list the `paws` and `boolq` fix; as of 2026-10-10 the latest release is 0.24.0. The anchor stays on 0.20.0, where the behaviour is present. `tests/test_paws_regression.py` reproduces it from committed code.
 
 ## Reachability
 
@@ -84,13 +86,15 @@ Defects are logged, not quietly fixed. What the instrument got wrong is what tel
 | 006 | an ungradeable grader response was about to be reported as a zero | nothing published -- it was caught on a mock -- but it is the exact shape this project exists to find: a number that looks like a measured floor and is not one |
 | 007 | an eval's own grade vocabulary was being converted to zero | every graded number on the first real run, in the direction that understates the floor |
 | 008 | the provider pin was requested on a channel that was overwritten | the judge-disagreement figure and the pinned cost line published in 255eb3a, both measured under routing that was never recorded |
+| 009 | the report applied the deterministic arm's rules to the graded arm | the graded verdict sentence, and three published numbers for an arm that did not run (the raw "0 of 7", the raw "0.0%" cells, "disagree on 3"); no measured number |
+| 010 | an unseeded choice shuffle made the first sweep non-reproducible | the reproducibility of the published count, and with it the section 1 verdict on 0.20.0: 4 is under five, 5 is not |
 
 ## Limitations
 
 | limitation | what it means for the number |
 |---|---|
 | A flagged task is not a worthless benchmark | a loose scorer inflates a number without saying the underlying task is easy. **No claim is made about the conclusions of any published paper** that used any of these evals. |
-| One version pin | everything here is measured on `inspect_ai` 0.3.263 and `inspect_evals` 0.20.0. Rows from different versions are never mixed; on any bump the whole sweep re-runs. |
+| One version pin | everything here is measured on `inspect_ai` 0.3.263 and `inspect_evals` 0.20.0, battery fingerprint `b019ebb6ecee`, as each arm's `sweep.json` recorded it. Rows from different versions are never mixed; on any bump the whole sweep re-runs. |
 | Deterministic scorers only | model-graded tasks are excluded from this number and deferred to a separate arm with its own intervals. The exclusion is counted, not hidden. |
 | The rendering rule is a choice | writing a member in the task's answer template changes what it scores. Both arms are published so the size of that effect is visible, but the headline depends on which arm is preregistered. |
 | Reachability is far below the collection size | most tasks need a container, a grader model, a gated dataset or an extra dependency. The denominator is published as prominently as the rate. |

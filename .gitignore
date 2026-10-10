@@ -12,3 +12,4 @@ logs/
 
 # scratch from editing sessions; never part of the package
 *.tmp
+.venv-024/

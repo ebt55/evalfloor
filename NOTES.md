@@ -17,6 +17,11 @@ Checked with `gh` against `UKGovernmentBEIS/inspect_evals` on 2026-09-15.
 | Issue [#2331](https://github.com/UKGovernmentBEIS/inspect_evals/issues/2331) | **OPEN**. Opened 2026-08-31T08:53:18Z by **caiotheodoro** (Caio Theodoro). `closedAt: null`. Title: "``paws``: ``includes()`` scorer credits any completion containing both labels -- a constant string scores 100%". Not our issue; credit it, never claim it. |
 | PR [#2334](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2334) | **OPEN, not merged**. `mergedAt: null`. Opened 2026-09-01T00:00:21Z by **jkopczyn** (Jacob Kopczynski), branch `includes_hardening`. Touches `paws/paws.py`, `boolq/boolq.py`, both `eval.yaml`s, both READMEs, both test files, plus a new `tests/utils/case_lists.py`. |
 
+> **Correction 2026-10-10.** #2334 merged 2026-09-16 13:34 UTC. The v0.21.0
+> release notes (2026-09-17) say `paws` replaces `includes()` with a `pattern()`
+> that accepts only a bare Yes or No, and that `boolq` is tightened the same way.
+> The row above is what the API said on 2026-09-15 and stays as it was.
+
 One correction to what the plan documents say. The plan says #2334 was "approved
 merge-ready Sep 9". What is actually there:
 
@@ -32,6 +37,8 @@ merge-ready Sep 9". What is actually there:
 So: merge-ready in a maintainer's words, in a comment, on 2026-09-09; **not**
 approved in GitHub's review state, and **not merged** as of 2026-09-15. The
 README says "in flight", which is the accurate phrasing. Do not upgrade it.
+
+Superseded 2026-10-10: merged 2026-09-16.
 
 ### Pins chosen
 
@@ -55,6 +62,12 @@ v0.20.0 is the latest release on PyPI (uploaded 2026-09-11T14:43:50). The #2334
 fix is in **no** release, because the PR is not merged. So the anchor test runs
 against the newest published version, which is strictly better than pinning a
 stale one: nobody can answer the result with "that was fixed months ago".
+
+> **Correction 2026-10-10.** #2334 merged 2026-09-16, and v0.21.0 (2026-09-17)
+> is the first release that contains it; as of 2026-10-10 the latest release is
+> 0.24.0 (PyPI, 2026-10-08). 0.20.0 is still the newest release whose `paws`
+> carries `scorer=includes()`, which is why the anchor stays on it. The paragraph
+> above was true on 2026-09-15 and stays as it was.
 
 **Why inspect_ai 0.3.263.** `inspect_evals` 0.20.0 declares `inspect_ai>=0.3.259`.
 0.3.263 (2026-09-04) is the latest release on PyPI and satisfies it. The #2331

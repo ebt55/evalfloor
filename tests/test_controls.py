@@ -296,23 +296,29 @@ def _floor_with_echo(task: str, echo_correct: int, n: int, template: str = "bare
     from evalfloor.aggregate import MemberScore, TaskFloor, wilson_interval
 
     low, high = wilson_interval(echo_correct, n)
+
+    def _echo(arm: str):
+        return MemberScore(
+            member="echo",
+            mean=echo_correct / n,
+            n_correct=echo_correct,
+            n_scored=n,
+            applicable=True,
+            arm=arm,
+            ci_low=low,
+            ci_high=high,
+        )
+
+    # Both arms, as the deterministic sweep always scores them. A floor with no
+    # raw arm is one the report prints as "not run" (defect 009).
     return TaskFloor(
         task=task,
         scorer="inspect_ai/includes",
         n_samples=n,
         sampled=False,
         answer_template=template,
-        members={
-            "echo": MemberScore(
-                member="echo",
-                mean=echo_correct / n,
-                n_correct=echo_correct,
-                n_scored=n,
-                applicable=True,
-                ci_low=low,
-                ci_high=high,
-            )
-        },
+        members={"echo": _echo("rendered")},
+        members_raw={"echo": _echo("raw")},
     )
 
 
