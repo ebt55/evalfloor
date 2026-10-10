@@ -1465,10 +1465,19 @@ def render_readme_graded(
 # table under it, so a figure can always be checked against the numbers.
 # --------------------------------------------------------------------------
 
-#: The close-out README's figures, each with a fixed place: F1 after the first
-#: paragraph, G1 in "What this is", F2 in the fix paragraph, F3 by the
-#: denominator, and G2 with its transcript in "Reproducing it".
-README_FIGURES: tuple[str, ...] = ("F1", "G1", "F2", "F3", "G2")
+#: The close-out README's figures, each with a fixed place: F0, the summary bar,
+#: directly after the first paragraph, then F1 with its reading guide, G1 in
+#: "What this is", F2 in the fix paragraph, F3 by the denominator, and G2 with
+#: its transcript in "Reproducing it".
+README_FIGURES: tuple[str, ...] = ("F0", "F1", "G1", "F2", "F3", "G2")
+
+#: Printed under F1, for a reader who has not seen a dot plot of floors before.
+HOW_TO_READ_F1 = (
+    "Each row is a task: the tick is the guess line (always answering the most "
+    "common answer), the dot is the best score of an answer with no content. Dot "
+    "left of the tick: healthy. On the tick (diamond): a tie by construction. Right "
+    "of the tick: flagged."
+)
 
 
 @dataclass(frozen=True)
@@ -1497,8 +1506,9 @@ class FigureRef:
 FigureProvider = Callable[..., Sequence[FigureRef]]
 
 
-def render_figure(fig: FigureRef) -> list[str]:
-    """A figure as markdown: the picture, caption, digest, data.
+def render_figure(fig: FigureRef, note: str | None = None) -> list[str]:
+    """A figure as markdown: the picture, caption, digest, data. ``note`` is a
+    line printed directly under the caption, such as a reading guide.
 
     A static figure is a ``<picture>`` that switches between its light and dark
     SVG. An animation is its GIF as a plain ``<img>``: a GIF cannot switch with
@@ -1515,6 +1525,8 @@ def render_figure(fig: FigureRef) -> list[str]:
             f'<img src="{html.escape(fig.light_svg, quote=True)}" alt="{alt}"></picture>'
         )
     lines = [picture, "", fig.caption]
+    if note:
+        lines += ["", note]
     lines += [
         "",
         f"<!-- figure {fig.id} data sha256:{fig.data_digest} -->",
@@ -1975,7 +1987,10 @@ def render_closeout_readme(
         f"{closeout.first_line(c, floors, rules)} {closeout.section1_sentence(c.F, c.K)}"
     )
     lines.append("")
-    lines.extend(render_figure(fig["F1"]))
+    # The result at a glance, then the floor task by task with how to read it.
+    lines.extend(render_figure(fig["F0"]))
+    lines.append("")
+    lines.extend(render_figure(fig["F1"], note=f"**How to read F1.** {HOW_TO_READ_F1}"))
     lines.append("")
     lines.append(closeout.status_line(_utc_date(payload.get("generated_at"))))
     lines.append("")

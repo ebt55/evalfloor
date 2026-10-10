@@ -69,12 +69,13 @@ from .closeout import ANCHOR_RELEASE, LIST_FIXED_AT, CloseoutCounts, representat
 # --------------------------------------------------------------------------
 
 #: The static figures, in README order. F2 exists only after the close-out sweep.
-FIGURE_IDS: tuple[str, ...] = ("F1", "F2", "F3")
+FIGURE_IDS: tuple[str, ...] = ("F0", "F1", "F2", "F3")
 GIF_IDS: tuple[str, ...] = ("G1", "G2")
 
 #: File stems. A static figure writes ``<stem>-{light,dark}.{svg,png}`` and
 #: ``<stem>.csv``; G1 writes ``<stem>.gif``; G2 writes ``g2-<name>.{gif,txt,json}``.
 FIGURE_NAMES: dict[str, str] = {
+    "F0": "f0-summary",
     "F1": "f1-floor",
     "F2": "f2-paws-fix",
     "F3": "f3-denominator",
@@ -86,9 +87,16 @@ FIGURE_NAMES: dict[str, str] = {
 #: The task F2 and G1 are about: the one loose scorer found on the anchor release.
 FIX_TASK = "inspect_evals/paws"
 
-#: Every PNG and GIF is this size; every SVG has this aspect.
+#: Every PNG and GIF is this size, and every SVG this aspect, except where
+#: FIGURE_SIZES says otherwise: F0 is one bar, so it gets half the height.
 SIZE: tuple[int, int] = (1920, 1080)
+FIGURE_SIZES: dict[str, tuple[int, int]] = {"F0": (1920, 540)}
 DPI = 100
+
+
+def figure_size(fig_id: str) -> tuple[int, int]:
+    """The pixel size of a figure's PNGs (and the aspect of its SVGs)."""
+    return FIGURE_SIZES.get(fig_id, SIZE)
 
 #: GIF budgets (bytes) and G1's running time (seconds).
 G1_MAX_BYTES = 4 * 1024 * 1024
@@ -99,6 +107,7 @@ G1_SECONDS: tuple[float, float] = (10.0, 14.0)
 F1_ROWS_PER_PANEL = 26
 
 FIELDS: dict[str, tuple[str, ...]] = {
+    "F0": ("segment", "label", "count", "start", "end", "drawn", "tasks", "zero_tasks"),
     "F1": (
         "task", "scorer", "n_scorers", "state", "majority", "majority_label",
         "best_member", "best_mean", "gap", "flagged_by", "flag_member", "flag_mean",
@@ -182,6 +191,34 @@ DARK = Theme(
 
 THEMES: tuple[Theme, ...] = (LIGHT, DARK)
 
+#: F0's segment colours, per mode. Healthy is the calm accent (slot 1). A tie is
+#: a neutral grey carrying F1's hollow diamond, so it never reads as a flag. A
+#: task-property flag is a muted warm (slot 4, yellow), not the status red,
+#: which is kept for the one outcome that would be a finding: a scorer defect.
+#: The other two greys appear only when such segments exist.
+F0_COLOURS: dict[str, dict[str, str]] = {
+    "light": {
+        "healthy": "#2a78d6",
+        "tie": "#c3c2b7",
+        "tie_mark": "#52514e",
+        "task_property": "#eda100",
+        "scorer_defect": "#d03b3b",
+        "instrument_fault": "#898781",
+        "unclassified": "#898781",
+        "not_run": "#e1e0d9",
+    },
+    "dark": {
+        "healthy": "#3987e5",
+        "tie": "#52514e",
+        "tie_mark": "#c3c2b7",
+        "task_property": "#c98500",
+        "scorer_defect": "#d03b3b",
+        "instrument_fault": "#898781",
+        "unclassified": "#898781",
+        "not_run": "#2c2c2a",
+    },
+}
+
 #: G1 cannot follow the reader's theme, so it picks one neutral surface that
 #: reads on both GitHub themes: the palette's neutral grey, framed by a muted
 #: border. A mid-grey would drop the status red below 3:1.
@@ -214,6 +251,11 @@ G2_THEME: dict[str, str] = {
 #: checks (``--ordinal``). The greys and text tokens are not identity colours, so
 #: they are checked for contrast only (:data:`CONTRAST_CHECKS`).
 PALETTES: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
+    # F0's hues in bar order (the tie grey between them is not an identity hue).
+    ("F0 healthy, task property, scorer defect", "light", "categorical",
+     tuple(F0_COLOURS["light"][k] for k in ("healthy", "task_property", "scorer_defect")), LIGHT.surface),
+    ("F0 healthy, task property, scorer defect", "dark", "categorical",
+     tuple(F0_COLOURS["dark"][k] for k in ("healthy", "task_property", "scorer_defect")), DARK.surface),
     ("F1 real flag (status critical)", "light", "categorical", ("#d03b3b",), LIGHT.surface),
     ("F1 real flag (status critical)", "dark", "categorical", ("#d03b3b",), DARK.surface),
     ("F2 releases, anchor -> under test", "light", "ordinal", (LIGHT.before, LIGHT.after), LIGHT.surface),
@@ -226,6 +268,8 @@ PALETTES: tuple[tuple[str, str, str, tuple[str, ...], str], ...] = (
 #: ``(what, colour, surface, minimum ratio)``: marks at 3:1, text at 4.5:1. A
 #: grey below 3:1 is a context mark that every figure also labels directly.
 CONTRAST_CHECKS: tuple[tuple[str, str, str, float], ...] = (
+    ("light F0 tie diamond on its grey", F0_COLOURS["light"]["tie_mark"], F0_COLOURS["light"]["tie"], 3.0),
+    ("dark F0 tie diamond on its grey", F0_COLOURS["dark"]["tie_mark"], F0_COLOURS["dark"]["tie"], 3.0),
     ("light text ink2", LIGHT.ink2, LIGHT.surface, 4.5),
     ("dark text ink2", DARK.ink2, DARK.surface, 4.5),
     ("light clean point", LIGHT.clean, LIGHT.surface, 3.0),
@@ -407,6 +451,66 @@ def f1_rows(
             }
         )
     return rows
+
+
+#: F0's outcomes, in bar order: ``(segment, label, always shown, test on an F1
+#: row)``. A segment marked "always" is a row even at zero, because "0 scorer
+#: defects" is the point; it is stated in the title, legend and caption and
+#: simply has no width in the bar. The others are rows only when they occur.
+F0_SEGMENTS: tuple[tuple[str, str, bool, Any], ...] = (
+    ("healthy", "healthy", True, lambda r: r["state"] == "clean"),
+    ("tie", "tie by construction (§8.5)", True, lambda r: r["state"] == "tie"),
+    ("task_property", "flagged: task property", True,
+     lambda r: r["state"] == "flag" and r["cause"] == "task property"),
+    ("scorer_defect", "flagged: scorer defect", True,
+     lambda r: r["state"] == "flag" and r["cause"] == "scorer defect"),
+    ("instrument_fault", "flagged: instrument fault", False,
+     lambda r: r["state"] == "flag" and r["cause"] == "instrument fault"),
+    ("unclassified", "flagged: unclassified", False,
+     lambda r: r["state"] == "flag" and r["cause"] not in TRIAGE_CLASSES),
+    ("not_run", "not run", False, lambda r: r["state"] == "not_run"),
+)
+
+
+def f0_rows(f1: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """F0's segments from F1's rows: the same floors, the same classification.
+
+    Every listed task is in exactly one segment, so the counts sum to C. A
+    healthy task whose majority and best content-free score are both 0.0 is
+    named in ``zero_tasks``: the guess line scores 0 there, so nothing can flag.
+    """
+    rows: list[dict[str, Any]] = []
+    cursor = 0
+    placed: set[str] = set()
+    for segment, label, always, test in F0_SEGMENTS:
+        tasks = sorted(r["task"] for r in f1 if test(r))
+        placed.update(tasks)
+        if not tasks and not always:
+            continue
+        zero = sorted(
+            r["task"] for r in f1
+            if segment == "healthy" and test(r) and r["majority"] == 0.0 and r["best_mean"] == 0.0
+        )
+        if segment == "tie" and len(tasks) != 1:
+            label = "ties by construction (§8.5)"
+        rows.append({
+            "segment": segment, "label": label, "count": len(tasks), "start": cursor,
+            "end": cursor + len(tasks), "drawn": bool(tasks), "tasks": tasks, "zero_tasks": zero,
+        })
+        cursor += len(tasks)
+    stray = sorted({r["task"] for r in f1} - placed)
+    if stray:
+        raise ValueError(f"F0 has no segment for {stray}")
+    return rows
+
+
+def _f0_count(rows: Sequence[Mapping[str, Any]], segment: str) -> int:
+    return next((r["count"] for r in rows if r["segment"] == segment), 0)
+
+
+def f0_legend(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """One legend entry per segment row, zero counts included."""
+    return [f"{r['count']} {r['label']}" for r in rows]
 
 
 def _f1_tally(rows: Sequence[Mapping[str, Any]]) -> tuple[int, int, int]:
@@ -630,12 +734,14 @@ def figure_data(
     drawn. ``rulings`` supplies ``not_counted`` treatments and is applied to the
     anchor payload for F2. ``countable`` defaults to :func:`default_countable`.
 
-    F1 is always present. F3 needs ``inventories["anchor"]``. F2 needs an
+    F0 and F1 are always present; F0 is F1's rows counted by outcome.
+    F3 needs ``inventories["anchor"]``. F2 needs an
     ``anchor_payload`` on a different release from ``payload``'s, with a scored
     ``paws`` floor on both, so it appears only after the close-out sweep. G1 is
     drawn from F2's rows.
     """
-    data: dict[str, list[dict[str, Any]]] = {"F1": f1_rows(after_floors, counts, rulings)}
+    f1 = f1_rows(after_floors, counts, rulings)
+    data: dict[str, list[dict[str, Any]]] = {"F0": f0_rows(f1), "F1": f1}
     anchor_inventory = (inventories or {}).get("anchor")
     if anchor_inventory is not None:
         listed = list(countable) if countable is not None else default_countable(payload, rulings)
@@ -776,8 +882,47 @@ def tie_sentence(rows: Sequence[Mapping[str, Any]]) -> str:
     return f"{shown} is also the majority answer: a tie by construction (§8.5)"
 
 
+def _f0_parts(rows: Sequence[Mapping[str, Any]]) -> list[str]:
+    """F0's outcome counts as title phrases. The first four are always said, the
+    zero ones included; the rest only when they occur."""
+    n = lambda seg: _f0_count(rows, seg)  # noqa: E731
+    parts = [
+        f"{n('healthy')} healthy",
+        f"{n('tie')} {_plural(n('tie'), 'tie', 'ties')} by construction",
+        f"{n('task_property')} task {_plural(n('task_property'), 'property', 'properties')}",
+        f"{n('scorer_defect')} loose {_plural(n('scorer_defect'), 'scorer', 'scorers')}",
+    ]
+    if n("instrument_fault"):
+        parts.append(f"{n('instrument_fault')} instrument {_plural(n('instrument_fault'), 'fault', 'faults')}")
+    if n("unclassified"):
+        parts.append(f"{n('unclassified')} unclassified")
+    if n("not_run"):
+        parts.append(f"{n('not_run')} not run")
+    return parts
+
+
+#: F0's subtitle: what a flag is, for a reader who has not met the project.
+F0_SUBTITLE = (
+    "A task is flagged when an answer with no content scores at least as well as "
+    "always guessing the most common answer."
+)
+
+
+def f0_footnote(rows: Sequence[Mapping[str, Any]]) -> str:
+    zero = [t for r in rows for t in r["zero_tasks"]]
+    if not zero:
+        return ""
+    return (
+        f"* {_names([_short(t) for t in zero])} {_plural(len(zero), 'counts', 'count')} as "
+        "healthy: the guess line itself scores 0 there, so nothing can flag."
+    )
+
+
 def title(fig_id: str, rows: Sequence[Mapping[str, Any]], counts: CloseoutCounts | None = None) -> str:
-    """The figure's title, computed. F2 needs no counts; F1 and F3 do."""
+    """The figure's title, computed. F2 needs no counts; F0, F1 and F3 do."""
+    if fig_id == "F0":
+        total = sum(r["count"] for r in rows)
+        return f"{total} tasks on inspect_evals {counts.release}: " + ", ".join(_f0_parts(rows))
     if fig_id == "F1":
         N, F, K = _f1_tally(rows)
         return f"{F - K} of {N} beyond {K} {_plural(K, 'tie', 'ties')}, inspect_evals {counts.release}"
@@ -796,6 +941,8 @@ def title(fig_id: str, rows: Sequence[Mapping[str, Any]], counts: CloseoutCounts
 
 
 def subtitle(fig_id: str, rows: Sequence[Mapping[str, Any]], counts: CloseoutCounts) -> str:
+    if fig_id == "F0":
+        return F0_SUBTITLE
     if fig_id == "F1":
         N, F, K = _f1_tally(rows)
         return (
@@ -829,6 +976,25 @@ def subtitle(fig_id: str, rows: Sequence[Mapping[str, Any]], counts: CloseoutCou
 
 def alt_text(fig_id: str, rows: Sequence[Mapping[str, Any]], counts: CloseoutCounts) -> str:
     """The image's alt text, computed from the rows the image draws."""
+    if fig_id == "F0":
+        total = sum(r["count"] for r in rows)
+        segs = []
+        for r in rows:
+            which = ""
+            if 0 < r["count"] <= 3 and r["segment"] != "healthy":
+                which = f" ({_names([_short(t) for t in r['tasks']])})"
+            empty = ", so that part of the bar is empty" if not r["count"] else ""
+            segs.append(f"{r['count']} {r['label']}{which}{empty}")
+        zero = [t for r in rows for t in r["zero_tasks"]]
+        foot = (
+            f" Healthy includes {_names([_short(t) for t in zero])}: the guess line itself "
+            "scores 0 there, so nothing can flag."
+            if zero else ""
+        )
+        return (
+            f"One horizontal bar of the {total} countable tasks on inspect_evals "
+            f"{counts.release}, split by outcome: {'; '.join(segs)}. {F0_SUBTITLE}{foot}"
+        )
     if fig_id == "F1":
         N, F, K = _f1_tally(rows)
         drawn = [r for r in rows if r["state"] != "not_run"]
@@ -909,6 +1075,13 @@ def alt_text(fig_id: str, rows: Sequence[Mapping[str, Any]], counts: CloseoutCou
 def caption(fig_id: str, rows: Sequence[Mapping[str, Any]], counts: CloseoutCounts) -> str:
     """The line printed under the figure."""
     name = FIGURE_NAMES[fig_id]
+    if fig_id == "F0":
+        total = sum(r["count"] for r in rows)
+        stated = "; ".join(f"{r['count']} {r['label']}" for r in rows)
+        return (
+            f"The {total} countable tasks on inspect_evals {counts.release}, by outcome: "
+            f"{stated}. Data: `{name}.csv`."
+        )
     if fig_id == "F1":
         N, F, K = _f1_tally(rows)
         return (
@@ -940,7 +1113,19 @@ def _md(text: Any) -> str:
 def table_twin(fig_id: str, rows: Sequence[Mapping[str, Any]]) -> str:
     """The figure's rows as a markdown table, for a ``<details>`` block."""
     lines: list[str] = []
-    if fig_id == "F1":
+    if fig_id == "F0":
+        lines += ["| outcome | tasks | which |", "|---|---|---|"]
+        for r in rows:
+            if r["segment"] != "healthy":
+                which = ", ".join("`" + _short(t) + "`" for t in r["tasks"])
+            else:
+                which = "every other task"
+                if r["zero_tasks"]:
+                    zero = _names(["`" + _short(t) + "`" for t in r["zero_tasks"]])
+                    which += f"; on {zero} the guess line itself scores 0"
+            lines.append(f"| {r['label']} | {r['count']} | {which or '-'} |")
+        lines.append(f"| **countable** | **{sum(r['count'] for r in rows)}** | |")
+    elif fig_id == "F1":
         lines += [
             "| task | scorer | majority | best content-free | score | gap | §4 |",
             "|---|---|---|---|---|---|---|",
@@ -1278,6 +1463,7 @@ def make_figure_provider(
             )
         payload_src = f"results/sweep.json (sweep digest {str(payload.get('digest', ''))[:12]})"
         sources = {
+            "F0": payload_src,
             "F1": payload_src,
             "F2": f"{before_ref}:results/sweep.json and {payload_src}",
             "F3": "results/graded/task_inventory.json",
@@ -1369,20 +1555,22 @@ def _rc(digest: str) -> dict[str, Any]:
 
 
 class _Canvas:
-    """A 1920x1080 figure with an overlay axes whose data units are pixels,
-    y down from the top, for every mark that is not on a plot axis."""
+    """A figure (1920x1080 unless ``size`` says otherwise) with an overlay axes
+    whose data units are pixels, y down from the top, for every mark that is not
+    on a plot axis."""
 
-    def __init__(self, theme: Theme) -> None:
+    def __init__(self, theme: Theme, size: tuple[int, int] = SIZE) -> None:
         from matplotlib.backends.backend_agg import FigureCanvasAgg
         from matplotlib.figure import Figure
 
         self.theme = theme
-        self.fig = Figure(figsize=(SIZE[0] / DPI, SIZE[1] / DPI), dpi=DPI, facecolor=theme.surface)
+        self.W, self.H = size
+        self.fig = Figure(figsize=(self.W / DPI, self.H / DPI), dpi=DPI, facecolor=theme.surface)
         FigureCanvasAgg(self.fig)
         self.renderer = self.fig.canvas.get_renderer()
         ov = self.fig.add_axes((0, 0, 1, 1), zorder=5)
-        ov.set_xlim(0, SIZE[0])
-        ov.set_ylim(SIZE[1], 0)
+        ov.set_xlim(0, self.W)
+        ov.set_ylim(self.H, 0)
         ov.axis("off")
         ov.patch.set_alpha(0.0)
         self.ov = ov
@@ -1402,7 +1590,7 @@ class _Canvas:
         return self._widths[key]
 
     def plot_axes(self, x: float, y: float, w: float, h: float) -> Any:
-        ax = self.fig.add_axes((x / SIZE[0], 1 - (y + h) / SIZE[1], w / SIZE[0], h / SIZE[1]), zorder=2)
+        ax = self.fig.add_axes((x / self.W, 1 - (y + h) / self.H, w / self.W, h / self.H), zorder=2)
         ax.set_facecolor("none")
         for spine in ax.spines.values():
             spine.set_visible(False)
@@ -1424,7 +1612,11 @@ class _Canvas:
 
     def header(self, title_text: str, subtitle_text: str) -> None:
         t = self.theme
-        self.text(64, 76, title_text, 40, t.ink, fontweight="semibold")
+        # A long computed title steps down in size until it fits one line.
+        px = 40.0
+        while px > 30 and self.width(title_text, px, "semibold") > 1792:
+            px -= 2
+        self.text(64, 76, title_text, px, t.ink, fontweight="semibold")
         for i, line in enumerate(self.wrap(subtitle_text, 1792, 24)[:2]):
             self.text(64, 120 + 32 * i, line, 24, t.ink2)
 
@@ -1432,7 +1624,7 @@ class _Canvas:
         # Wrapped, never clipped: at most two lines, the last one at the bottom.
         lines = self.wrap(text, 1792, 18)[:2]
         for k, line in enumerate(reversed(lines)):
-            self.text(64, SIZE[1] - 30 - 24 * k, line, 18, self.theme.ink2)
+            self.text(64, self.H - 30 - 24 * k, line, 18, self.theme.ink2)
 
     def marker(self, x: float, y: float, kind: str, color: str, size_px: float = 16, hollow: bool = False) -> None:
         self.ov.plot(
@@ -1838,7 +2030,133 @@ def _draw_f3(rows: Sequence[Mapping[str, Any]], texts: Mapping[str, str], theme:
     return cv
 
 
-_DRAW = {"F1": _draw_f1, "F2": _draw_f2, "F3": _draw_f3}
+# --------------------------------------------------------------------------
+# F0
+# --------------------------------------------------------------------------
+
+
+def f0_layout(rows: Sequence[Mapping[str, Any]], x0: float = 64.0, x1: float = 1856.0) -> list[dict[str, Any]]:
+    """The bar's drawn segments, ``{segment, a, b}`` in pixels, with the 2px
+    surface gap between neighbours. A zero-count segment has no width, so it is
+    not here; it is stated in the title, legend and caption instead. Pure."""
+    total = sum(r["count"] for r in rows)
+    drawn = [r for r in rows if r["count"]]
+    scale = (x1 - x0) / max(1, total)
+    out = []
+    for k, r in enumerate(drawn):
+        a = x0 + r["start"] * scale + (1 if k else 0)
+        b = x0 + r["end"] * scale - (1 if k < len(drawn) - 1 else 0)
+        out.append({"segment": r["segment"], "a": a, "b": b})
+    return out
+
+
+def _f0_short(r: Mapping[str, Any]) -> str:
+    """A segment's direct label: short, because the legend gives the full name."""
+    n = r["count"]
+    return {
+        "healthy": "healthy" + ("*" if r["zero_tasks"] else ""),
+        "tie": _plural(n, "tie", "ties") + " by construction",
+        "task_property": "task " + _plural(n, "property", "properties"),
+        "scorer_defect": _plural(n, "scorer defect", "scorer defects"),
+        "instrument_fault": _plural(n, "instrument fault", "instrument faults"),
+        "unclassified": "unclassified",
+        "not_run": "not run",
+    }[r["segment"]]
+
+
+def _draw_f0(rows: Sequence[Mapping[str, Any]], texts: Mapping[str, str], theme: Theme) -> _Canvas:
+    from matplotlib.patches import PathPatch, Rectangle
+    from matplotlib.path import Path
+
+    cv = _Canvas(theme, figure_size("F0"))
+    cv.header(texts["title"], texts["subtitle"])
+    col = F0_COLOURS[theme.mode]
+    x0, x1 = 64.0, 1856.0
+    bar_top, bar_h = 300.0, 24.0
+    by_seg = {r["segment"]: r for r in rows}
+    geo = f0_layout(rows, x0, x1)
+
+    for k, g in enumerate(geo):
+        a, b, seg = g["a"], g["b"], g["segment"]
+        rad = 4.0 if k == len(geo) - 1 else 0.0  # the data end is rounded, the baseline square
+        verts = [(a, bar_top), (b - rad, bar_top)]
+        codes = [Path.MOVETO, Path.LINETO]
+        if rad:
+            verts += [(b, bar_top), (b, bar_top + rad), (b, bar_top + bar_h - rad), (b, bar_top + bar_h),
+                      (b - rad, bar_top + bar_h)]
+            codes += [Path.CURVE3, Path.CURVE3, Path.LINETO, Path.CURVE3, Path.CURVE3]
+        else:
+            verts += [(b, bar_top + bar_h)]
+            codes += [Path.LINETO]
+        verts += [(a, bar_top + bar_h), (a, bar_top)]
+        codes += [Path.LINETO, Path.CLOSEPOLY]
+        cv.ov.add_patch(PathPatch(Path(verts, codes), facecolor=col[seg], edgecolor="none", zorder=3))
+        if seg == "tie":
+            # F1's hollow diamond, repeated: a tie is never read as a flag.
+            n = max(1, int((b - a - 12) // 30))
+            step = (b - a) / n
+            xs = [a + step * (i + 0.5) for i in range(n)]
+            cv.ov.plot(xs, [bar_top + bar_h / 2] * n, marker="D", markersize=_pt(11), linestyle="none",
+                       markerfacecolor=col["tie"], markeredgecolor=col["tie_mark"],
+                       markeredgewidth=_pt(1.5), zorder=4)
+
+    # Direct labels above the bar: count, name, and the task itself on a small
+    # segment. A label that would run off the right edge is right-aligned to it.
+    # Every count sits on one baseline; a small segment's tasks are named under
+    # it, so its label above stays two lines like the others.
+    ends: list[float] = []
+    for g in geo:
+        r = by_seg[g["segment"]]
+        lines = [(str(r["count"]), 44.0, "semibold", theme.ink), (_f0_short(r), 22.0, "normal", theme.ink2)]
+        w = max(cv.width(s, px, wt) for s, px, wt, _ in lines)
+        left = min(g["a"], x1 - w)
+        right_aligned = left < g["a"]
+        tier = 0
+        while tier < len(ends) and left < ends[tier]:
+            tier += 1
+        if tier == len(ends):
+            ends.append(0.0)
+        ends[tier] = left + w + 28
+        bottom = bar_top - 18 - 86 * tier  # the name's baseline
+        lx = (g["a"] + g["b"]) / 2 if right_aligned else g["a"] + 1
+        cv.ov.plot([lx, lx], [bar_top - 4, bottom + 8], color=theme.ink2, lw=_pt(1), zorder=4)
+        for (s, px, wt, colour), y in zip(lines, (bottom - 30, bottom)):
+            if right_aligned:
+                cv.text(left + w, y, s, px, colour, ha="right", fontweight=wt)
+            else:
+                cv.text(left, y, s, px, colour, fontweight=wt)
+        if r["segment"] != "healthy" and r["count"] <= 3:
+            names = ", ".join(_short(t) for t in r["tasks"])
+            y = bar_top + bar_h + 30
+            if g["a"] + cv.width(names, 22, "semibold") > x1:
+                cv.text(x1, y, names, 22, theme.ink, ha="right", fontweight="semibold")
+            else:
+                cv.text(g["a"], y, names, 22, theme.ink, fontweight="semibold")
+
+    # The legend states every outcome, a zero one included (as an empty swatch).
+    x, y = 64.0, 410.0
+    for r, label in zip(rows, f0_legend(rows)):
+        seg = r["segment"]
+        if r["count"]:
+            cv.ov.add_patch(Rectangle((x, y - 17), 22, 22, facecolor=col[seg], edgecolor="none", zorder=4))
+            if seg == "tie":
+                cv.ov.plot([x + 11], [y - 6], marker="D", markersize=_pt(10), linestyle="none",
+                           markerfacecolor=col["tie"], markeredgecolor=col["tie_mark"],
+                           markeredgewidth=_pt(1.5), zorder=5)
+        else:
+            cv.ov.add_patch(Rectangle((x + 1, y - 16), 20, 20, facecolor="none", edgecolor=col[seg],
+                                      lw=_pt(2), zorder=4))
+        cv.text(x + 32, y, label, 22, theme.ink if not r["count"] else theme.ink2,
+                fontweight="semibold" if not r["count"] else "normal")
+        x += 32 + cv.width(label, 22, "semibold" if not r["count"] else "normal") + 44
+    foot = f0_footnote(rows)
+    if foot:
+        cv.text(64, 456, foot, 20, theme.ink2)
+    cv.footer(texts["footer"])
+    return cv
+
+
+_DRAW = {"F0": _draw_f0, "F1": _draw_f1, "F2": _draw_f2, "F3": _draw_f3}
 
 
 def render_static(
@@ -1864,7 +2182,7 @@ def render_static(
     try:
         with matplotlib.rc_context(_rc(digest)):
             for theme in THEMES:
-                if fig_id == "F3":
+                if fig_id == "F3":  # F3's caption lines need the counts
                     cv = _draw_f3(rows, texts, theme, counts)
                 else:
                     cv = _DRAW[fig_id](rows, texts, theme)
@@ -2436,7 +2754,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                    help=f"commit holding the anchor payload and inventory (default {LIST_FIXED_AT})")
     p.add_argument("--after", default=None, help="deterministic payload to draw (default <results>/sweep.json)")
     p.add_argument("--repeat", default=None, help="the second run's payload, as for `report --repeat`")
-    p.add_argument("--only", default=None, help="comma-separated: F1,F2,F3,G1,G2 (default: every one available)")
+    p.add_argument("--only", default=None, help=f"comma-separated: {','.join(FIGURE_IDS + GIF_IDS)} (default: every one available)")
     p.add_argument("--capture", metavar="NAME", default=None,
                    help="run the command after `--`, record it as g2-NAME.{json,txt,gif}")
     args = p.parse_args(argv)
@@ -2451,7 +2769,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         _sizes(write_capture(cap, out, args.capture))
         return 0
 
-    wanted = [x.strip().upper() for x in (args.only or "F1,F2,F3,G1,G2").split(",") if x.strip()]
+    wanted = [x.strip().upper() for x in (args.only or ",".join(FIGURE_IDS + GIF_IDS)).split(",") if x.strip()]
     explicit = args.only is not None
     unknown = sorted(set(wanted) - set(FIGURE_IDS) - set(GIF_IDS))
     if unknown:

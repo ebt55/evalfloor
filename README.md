@@ -8,9 +8,29 @@
 
 I fed eight answers with no content to the real scorers of 45 Inspect Evals tasks that run without a model, on `inspect_evals` 0.24.0. 1 reached its majority baseline other than by construction: `inspect_evals/bbh`, where `echo` scores 26.2% against a 15.8% baseline because its few-shot examples end in `ANSWER: <label>` (bbh.py:98-108) and the scorers keep the last `ANSWER:` (_multiple_choice.py:106-115, _util/pattern.py:1-8), so echo gives one fixed label per subset: a property of the task, not a loose scorer. On 10 more, the placeholder answer is the modal answer (§8.5). The one loose scorer this tool found on 0.20.0, `paws` (reported first by caiotheodoro, #2331), was fixed upstream in v0.21.0, and this sweep confirms the fix. 11 flagged under the preregistered rule, 10 of them ties; the preregistered negative result does not hold.
 
+<picture><source media="(prefers-color-scheme: dark)" srcset="docs/figures/f0-summary-dark.svg"><img src="docs/figures/f0-summary-light.svg" alt="One horizontal bar of the 45 countable tasks on inspect_evals 0.24.0, split by outcome: 34 healthy; 10 ties by construction (§8.5); 1 flagged: task property (bbh); 0 flagged: scorer defect, so that part of the bar is empty. A task is flagged when an answer with no content scores at least as well as always guessing the most common answer. Healthy includes chembench and macbench: the guess line itself scores 0 there, so nothing can flag."></picture>
+
+The 45 countable tasks on inspect_evals 0.24.0, by outcome: 34 healthy; 10 ties by construction (§8.5); 1 flagged: task property; 0 flagged: scorer defect. Data: `f0-summary.csv`.
+
+<!-- figure F0 data sha256:6ce8215328955aa373d517c7243c86ff10a2c36037ba13ac8b55cfc9167ccc6e -->
+
+<details><summary>Data</summary>
+
+| outcome | tasks | which |
+|---|---|---|
+| healthy | 34 | every other task; on `chembench` and `macbench` the guess line itself scores 0 |
+| ties by construction (§8.5) | 10 | `lab_bench_dbqa`, `lab_bench_litqa`, `lab_bench_seqqa`, `lab_bench_tableqa`, `mmlu_pro`, `musr`, `pubmedqa`, `truthfulqa`, `vstar_bench_attribute_recognition`, `wmdp_cyber` |
+| flagged: task property | 1 | `bbh` |
+| flagged: scorer defect | 0 | - |
+| **countable** | **45** | |
+
+</details>
+
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/figures/f1-floor-dark.svg"><img src="docs/figures/f1-floor-light.svg" alt="Dot plot of 45 tasks on inspect_evals 0.24.0, one row per task, sorted by gap: a tick at each task&#x27;s majority baseline and a point at its best content-free score. 1 task is flagged beyond the ties: bbh, where echo scores 26.2% against a 15.8% majority (task property, per its note ruling). 10 tasks tie the majority exactly (lab_bench_dbqa, lab_bench_litqa, lab_bench_seqqa, lab_bench_tableqa, mmlu_pro, musr, pubmedqa, truthfulqa, vstar_bench_attribute_recognition and wmdp_cyber), because &quot;ANSWER: A&quot; is also the majority answer: a tie by construction (§8.5); they are counted in the 11 flags. On chembench and macbench the majority answer itself scores 0.0%, and a zero never flags. The other 32 sit below their baseline, by 0.1 to 62.2 points."></picture>
 
 11 of 45 tasks flagged under §4, 10 of them ties by construction (§8.5), on inspect_evals 0.24.0. Data: `f1-floor.csv`.
+
+**How to read F1.** Each row is a task: the tick is the guess line (always answering the most common answer), the dot is the best score of an answer with no content. Dot left of the tick: healthy. On the tick (diamond): a tie by construction. Right of the tick: flagged.
 
 <!-- figure F1 data sha256:ba790f0ee19a05c6bd1ef13161aeab30b004235242493a211cfeb7ea8a6650ae -->
 

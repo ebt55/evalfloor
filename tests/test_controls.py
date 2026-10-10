@@ -1077,8 +1077,19 @@ def test_the_closeout_readme_renders_every_branch(tmp_path) -> None:
     assert "evalfloor check inspect_evals/paws     # exits non-zero on 0.20.0" in reproduce
     assert "--first-sweep" not in text
 
-    # Each figure in its place, once.
+    # Each figure in its place, once. F0, the summary bar, comes first: directly
+    # after the first paragraph and before F1, which carries its reading guide.
+    from evalfloor.report import HOW_TO_READ_F1
+
+    after_first = text.split("## The number, and its denominator\n\n", 1)[1].split("\n", 2)[2]
+    assert after_first.startswith('<picture><source media="(prefers-color-scheme: dark)" '
+                                  'srcset="docs/figures/F0.dark.svg">'), after_first[:120]
+    assert text.index("<!-- figure F0 data sha256:") < text.index("<!-- figure F1 data sha256:")
+    f1_block = _between(text, 'srcset="docs/figures/F1.dark.svg">', "<!-- figure F1 data sha256:")
+    assert f"**How to read F1.** {HOW_TO_READ_F1}" in f1_block
+    assert text.count(HOW_TO_READ_F1) == 1
     for fig, (start, end) in {
+        "F0": ("## The number, and its denominator", "Status: closed"),
         "F1": ("## The number, and its denominator", "Status: closed"),
         "F3": ("## The denominator", "Listed and not run"),
         "G1": ("## What this is", "## The case that started it"),
@@ -1320,7 +1331,7 @@ def test_report_places_the_committed_figures_without_drawing(
     code, out = _run_report_in(tree, monkeypatch, capsys)
     assert code == 0, out.err
     text = (tree / "README.md").read_text(encoding="utf-8")
-    for fig_id in ("F1", "F2", "F3"):
+    for fig_id in ("F0", "F1", "F2", "F3"):
         stem = figures.FIGURE_NAMES[fig_id]
         digest = figures.embedded_digest(figs / f"{stem}-light.svg")
         assert digest == drawn[fig_id].data_digest

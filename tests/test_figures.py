@@ -178,6 +178,92 @@ def test_f1_csv_round_trips(committed, tmp_path) -> None:
 
 
 # --------------------------------------------------------------------------
+# F0: the summary bar
+# --------------------------------------------------------------------------
+
+
+def _f0(rows, segment):
+    return next((r for r in rows if r["segment"] == segment), None)
+
+
+def test_f0_rows_equal_the_payload_counts(committed) -> None:
+    rows, c, after = committed["data"]["F0"], committed["counts"], committed["after"]
+    assert sum(r["count"] for r in rows) == c.C == len(committed["payload"]["tasks"])
+    tasks = [t for r in rows for t in r["tasks"]]
+    assert sorted(tasks) == sorted(committed["payload"]["tasks"])  # each listed task once
+    assert rows[0]["start"] == 0 and all(a["end"] == b["start"] for a, b in zip(rows, rows[1:]))
+
+    # Recomputed from the floors and the rulings, not from F1's rows.
+    by_task: dict[str, list] = {}
+    for f in after:
+        by_task.setdefault(f.task, []).append(f)
+    causes = {}
+    for task in c.real_flags:
+        f = closeout.representative_floor(by_task[task])
+        notes = [r for r in committed["rules"] if r.action == "note" and r.task == task
+                 and (not r.scorer or r.scorer == f.scorer)]
+        # The last note on the task; the first triage class its text names.
+        text = f"{notes[-1].reason} {notes[-1].source}".lower() if notes else ""
+        named = [(text.find(k), k) for k in ("scorer defect", "task property", "instrument fault") if k in text]
+        causes[task] = min(named)[1] if named else ""
+    assert _f0(rows, "healthy")["count"] == c.N - c.F
+    assert set(_f0(rows, "tie")["tasks"]) == set(c.ties)
+    assert set(_f0(rows, "task_property")["tasks"]) == {t for t, k in causes.items() if k == "task property"}
+    assert set(_f0(rows, "scorer_defect")["tasks"]) == {t for t, k in causes.items() if k == "scorer defect"}
+    unclassified = _f0(rows, "unclassified")
+    assert (unclassified["tasks"] if unclassified else []) == sorted(t for t, k in causes.items() if not k)
+    not_run = _f0(rows, "not_run")
+    assert (not_run["count"] if not_run else 0) == len(c.not_run)
+    zero = {
+        t for t in c.ran
+        if t not in c.flagged
+        and closeout.representative_floor(by_task[t]).majority == 0.0
+        and closeout.representative_floor(by_task[t]).best_mean == 0.0
+    }
+    assert set(_f0(rows, "healthy")["zero_tasks"]) == zero
+
+
+def test_f0_title_is_computed(committed) -> None:
+    rows, c = committed["data"]["F0"], committed["counts"]
+    n = {r["segment"]: r["count"] for r in rows}
+    expected = (
+        f"{c.C} tasks on inspect_evals {c.release}: {c.N - c.F} healthy, "
+        f"{c.K} {'tie' if c.K == 1 else 'ties'} by construction, "
+        f"{n['task_property']} task {'property' if n['task_property'] == 1 else 'properties'}, "
+        f"{n['scorer_defect']} loose {'scorer' if n['scorer_defect'] == 1 else 'scorers'}"
+    )
+    assert figures.title("F0", rows, c).startswith(expected)
+    assert figures.subtitle("F0", rows, c) == figures.F0_SUBTITLE
+
+
+def test_f0_zero_segment_is_stated_but_not_drawn(committed) -> None:
+    from evalfloor.rulings import Ruling
+
+    c = committed["counts"]
+    rows = figures.f0_rows([dict(r, cause="task property" if r["state"] == "flag" else r["cause"])
+                            for r in committed["data"]["F1"]])
+    defect = _f0(rows, "scorer_defect")
+    assert defect["count"] == 0 and defect["drawn"] is False
+    assert "scorer_defect" not in [g["segment"] for g in figures.f0_layout(rows)]
+    assert "0 loose scorers" in figures.title("F0", rows, c)
+    assert "0 flagged: scorer defect" in figures.f0_legend(rows)
+    assert "0 flagged: scorer defect" in figures.caption("F0", rows, c)
+    assert "so that part of the bar is empty" in figures.alt_text("F0", rows, c)
+
+    # The same flags, read as scorer defects by a note ruling: now it is drawn.
+    if not c.real_flags:
+        pytest.skip("no real flag to reclassify")
+    notes = [Ruling(task=t, action="note", reason="A scorer defect.", source="x.py:1") for t in c.real_flags]
+    f1 = figures.f1_rows(committed["after"], c, list(committed["rules"]) + notes)
+    flipped = figures.f0_rows(f1)
+    assert _f0(flipped, "scorer_defect")["count"] == len(c.real_flags)
+    assert "scorer_defect" in [g["segment"] for g in figures.f0_layout(flipped)]
+    assert f"{len(c.real_flags)} loose scorer" in figures.title("F0", flipped, c)
+    assert _f0(flipped, "task_property")["count"] == 0  # stated, not drawn
+    assert "task_property" not in [g["segment"] for g in figures.f0_layout(flipped)]
+
+
+# --------------------------------------------------------------------------
 # F3: one bar over the anchor inventory
 # --------------------------------------------------------------------------
 
@@ -344,28 +430,30 @@ def _png_description(path: pathlib.Path) -> str:
     return ""
 
 
-def _check_written(paths: list[pathlib.Path], rows, stem: str) -> None:
+def _check_written(paths: list[pathlib.Path], rows, fig_id: str) -> None:
+    stem = figures.FIGURE_NAMES[fig_id]
     digest = figures.data_digest(rows)
+    w, h = figures.figure_size(fig_id)
     names = {p.name for p in paths}
     assert names == {f"{stem}.csv"} | {f"{stem}-{m}.{x}" for m in ("light", "dark") for x in ("svg", "png")}
     for p in paths:
         if p.suffix == ".png":
-            assert _png_size(p) == figures.SIZE
+            assert _png_size(p) == (w, h)
             assert f"rows sha256 {digest}" in _png_description(p)
         if p.suffix == ".svg":
             text = p.read_text(encoding="utf-8")
             assert f"rows sha256 {digest}" in text
             assert "<text" not in text  # glyphs are paths, so GitHub draws them exactly
             assert "<dc:date>" not in text
-            assert 'viewBox="0 0 1382.4 777.6"' in text  # 1920x1080 at 72 dpi
+            assert f'viewBox="0 0 {w * 0.72:g} {h * 0.72:g}"' in text  # the PNG's size at 72 dpi
 
 
 def test_static_figures_write_every_variant_with_one_digest(committed, tmp_path) -> None:
     pytest.importorskip("matplotlib")
-    for fig_id in ("F1", "F3"):
+    for fig_id in ("F0", "F1", "F3"):
         rows = committed["data"][fig_id]
         paths = figures.render_static(fig_id, rows, committed["counts"], tmp_path)
-        _check_written(paths, rows, figures.FIGURE_NAMES[fig_id])
+        _check_written(paths, rows, fig_id)
         assert figures.read_data(tmp_path / f"{figures.FIGURE_NAMES[fig_id]}.csv") == [
             {k: figures.cell(r[k]) for k in figures.FIELDS[fig_id]} for r in rows
         ]
@@ -376,7 +464,7 @@ def test_f2_draws_from_a_fixture(tmp_path) -> None:
     anchor = _anchor_payload()
     rows = figures.f2_rows(anchor, _fixture_after(anchor, majority=0.6))
     paths = figures.render_static("F2", rows, None, tmp_path, "FIXTURE")
-    _check_written(paths, rows, figures.FIGURE_NAMES["F2"])
+    _check_written(paths, rows, "F2")
 
 
 def test_svg_and_png_bytes_are_stable(committed, tmp_path) -> None:
@@ -597,7 +685,7 @@ def test_committed_figures_match_the_committed_results(committed) -> None:
                 path = FIG_DIR / f"{stem}-{mode}.{ext}"
                 assert path.exists(), path.name
                 if ext == "png":
-                    assert _png_size(path) == figures.SIZE
+                    assert _png_size(path) == figures.figure_size(fig_id)
                     assert f"rows sha256 {digest}" in _png_description(path), path.name
                 else:
                     assert f"rows sha256 {digest}" in path.read_text(encoding="utf-8"), path.name
