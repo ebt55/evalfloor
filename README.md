@@ -340,6 +340,15 @@ inspect_evals/paws: clean
 
 Every number in `results/` and in this file is generated. None is typed by hand. Judgement calls live in `rulings.jsonl`, one row each, quoting the source line they came from, and the report applies that file mechanically. `evalfloor sweep` refuses to write a non-smoke result unless `PREREGISTRATION.md` is already committed in git history, and it records that commit hash in every file it generates. `evalfloor sweep --closeout` also refuses until the close-out addendum, section 11, is committed and on `origin/master`.
 
+## Credit
+
+* **caiotheodoro** found the `paws` case this project generalises ([#2331](https://github.com/UKGovernmentBEIS/inspect_evals/issues/2331)).
+* **jkopczyn** wrote the `paws`/`boolq` fix ([#2334](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2334)), merged by **ItsTania** on 2026-09-16.
+* **MattFisher** reported the unseeded answer-choice shuffles in `truthfulqa` and `lab_bench` ([#2399](https://github.com/UKGovernmentBEIS/inspect_evals/issues/2399), [#2400](https://github.com/UKGovernmentBEIS/inspect_evals/issues/2400)), the behaviour behind this project's defect 010.
+* **JianYan11** wrote the seeded fixes ([#2404](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2404), [#2406](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2406)); the harness uses their seed, 42, on 0.24.0.
+* **Lostmanu** reported a separate `bbh` scorer bug in the exact-match and Dyck subsets ([#2488](https://github.com/UKGovernmentBEIS/inspect_evals/issues/2488), fix in [#2491](https://github.com/UKGovernmentBEIS/inspect_evals/pull/2491)). This battery cannot see it; it turned up while tracing the `bbh` flag.
+* The datasets and scorers belong to each benchmark's authors and to the Inspect and Inspect Evals maintainers. eval-floor only drives them.
+
 ## Disclosure
 
 **Built with LLM coding agents (Claude), with the author reviewing every number's source.** The harness, the battery definitions and the tests were written with Claude Code doing the typing under direction. The design, the preregistration, the measurement choices and every claim made about the results are the author's, and the anchoring result is checked in as a test anyone can run against pinned versions rather than taken on trust.

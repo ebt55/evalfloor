@@ -1093,6 +1093,34 @@ def test_the_closeout_readme_renders_every_branch(tmp_path) -> None:
         assert word not in text, word
 
 
+def test_the_closeout_readme_credits_every_handle_and_link(tmp_path) -> None:
+    """Who found, reported and fixed what this project stands on, each thread
+    linked as the issue or pull request it is. Close-out README only."""
+    from evalfloor.report import render_readme, write_all
+
+    payload, repeat, results, rulings, release = _closeout_fixture(tmp_path, clean=True)
+    readme = tmp_path / "README.md"
+    write_all(
+        payload, results, rulings, inventory=release, readme_path=readme,
+        repeat=repeat, figure_provider=_fake_figures([]),
+    )
+    text = readme.read_text(encoding="utf-8")
+    credit = _between(text, "## Credit\n", "## Disclosure")
+    assert text.index("## Credit") < text.index("## Disclosure")
+    assert "\n## " not in credit.rstrip("\n"), "Credit sits directly before Disclosure"
+    for handle in ("caiotheodoro", "jkopczyn", "ItsTania", "MattFisher", "JianYan11", "Lostmanu"):
+        assert f"**{handle}**" in credit, handle
+    base = "https://github.com/UKGovernmentBEIS/inspect_evals"
+    for number in (2331, 2399, 2400, 2488):
+        assert f"[#{number}]({base}/issues/{number})" in credit, number
+    for number in (2334, 2404, 2406, 2491):
+        assert f"[#{number}]({base}/pull/{number})" in credit, number
+    assert "eval-floor only drives them." in credit
+
+    # The first-sweep README has no such section; it stays as committed.
+    assert "## Credit" not in render_readme(None, None)
+
+
 def test_the_closeout_readme_on_a_clean_sweep(tmp_path) -> None:
     from evalfloor.report import write_all
 

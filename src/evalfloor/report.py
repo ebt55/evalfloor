@@ -2061,8 +2061,51 @@ def render_closeout_readme(
     )
     lines.append("")
 
+    lines.extend(_readme_credit())
     lines.extend(_readme_disclosure())
     return "\n".join(lines)
+
+
+#: Upstream threads the close-out README credits: number -> issue or pull.
+CREDIT_LINKS: dict[int, str] = {
+    2331: "issues",
+    2334: "pull",
+    2399: "issues",
+    2400: "issues",
+    2404: "pull",
+    2406: "pull",
+    2488: "issues",
+    2491: "pull",
+}
+
+
+def _gh(number: int) -> str:
+    """``#NNNN`` linked to its issue or pull request on inspect_evals."""
+    kind = CREDIT_LINKS[number]
+    return f"[#{number}](https://github.com/UKGovernmentBEIS/inspect_evals/{kind}/{number})"
+
+
+def _readme_credit() -> list[str]:
+    """Who found, reported and fixed what this project stands on. Each line was
+    checked against GitHub with `gh` on 2026-10-10; close-out README only."""
+    return [
+        "## Credit",
+        "",
+        f"* **caiotheodoro** found the `paws` case this project generalises ({_gh(2331)}).",
+        f"* **jkopczyn** wrote the `paws`/`boolq` fix ({_gh(2334)}), merged by "
+        "**ItsTania** on 2026-09-16.",
+        "* **MattFisher** reported the unseeded answer-choice shuffles in `truthfulqa` "
+        f"and `lab_bench` ({_gh(2399)}, {_gh(2400)}), the behaviour behind this "
+        "project's defect 010.",
+        f"* **JianYan11** wrote the seeded fixes ({_gh(2404)}, {_gh(2406)}); the harness "
+        "uses their seed, 42, on 0.24.0.",
+        "* **Lostmanu** reported a separate `bbh` scorer bug in the exact-match and "
+        f"Dyck subsets ({_gh(2488)}, fix in {_gh(2491)}). This battery cannot see it; "
+        "it turned up while tracing the `bbh` flag.",
+        "* The datasets and scorers belong to each benchmark's authors and to the "
+        "Inspect and Inspect Evals maintainers. eval-floor only drives them.",
+        "",
+    ]
 
 
 # --------------------------------------------------------------------------
