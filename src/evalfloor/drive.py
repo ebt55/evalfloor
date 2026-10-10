@@ -14,10 +14,13 @@ every Inspect Evals eval is already required to support in its end-to-end test.
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import functools
+import inspect
 import math
 import time
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Iterator, Sequence
 
 from inspect_ai.model import ChatMessageAssistant, ChatMessageUser, ModelName, ModelOutput
 from inspect_ai.scorer import Score, Target, value_to_float
@@ -26,6 +29,7 @@ from inspect_ai.solver import TaskState
 from .battery import (
     ARMS,
     BATTERY,
+    SHUFFLE_SEED,
     BatteryMember,
     LabelSet,
     detect_template,
@@ -218,6 +222,107 @@ class TaskRun:
 
 
 # --------------------------------------------------------------------------
+# Seeded shuffles
+# --------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def seeded_shuffles(seed: int = SHUFFLE_SEED) -> Iterator[None]:
+    """Seed every shuffle a task leaves unseeded, for the length of one load.
+
+    Instrument defect 010. ``truthfulqa`` and ``lab_bench`` pass ``shuffle=True,
+    shuffle_choices=True`` and no seed. HuggingFace then shuffles the samples
+    from numpy's global state and the choice shuffle uses ``random.Random(None)``,
+    so two loads can put the correct answer under different letters and the
+    sweep's count moves between runs. The sort in :func:`task_samples` (defect
+    004) fixes the sample order, not the choice order. ``seed`` defaults to
+    ``battery.SHUFFLE_SEED``, which ``battery.run_fingerprint`` carries.
+
+    Three things are replaced, and all three are put back on exit, an exception
+    included:
+
+    1.  ``inspect_ai.dataset.hf_dataset``. Inspect Evals tasks bind
+        ``inspect_evals.utils.huggingface.hf_dataset`` by name at import, and
+        that wrapper looks this attribute up on every call, so replacing the
+        attribute reaches every load. A truthy ``shuffle`` with no ``seed`` gets
+        ``seed``; ``shuffle_choices=True`` becomes ``shuffle_choices=seed``. An
+        explicit seed is left alone.
+    2.  ``MemoryDataset.shuffle``: ``seed=None`` becomes ``seed``. A backstop for
+        a task that shuffles a dataset it built itself (``bbq`` does).
+    3.  ``MemoryDataset.shuffle_choices``: the same, for choices.
+
+    The utility module's own ``hf_dataset`` is deliberately left alone. Every
+    task module has already bound it by name, so replacing it would reach no
+    task, and a task module first imported inside the block would keep the
+    replacement after the block had closed.
+    """
+    import inspect_ai.dataset
+    from inspect_ai.dataset import MemoryDataset
+
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(
+            _replaced(
+                inspect_ai.dataset,
+                "hf_dataset",
+                _seeded_hf_dataset(inspect_ai.dataset.hf_dataset, seed),
+            )
+        )
+        for name in ("shuffle", "shuffle_choices"):
+            stack.enter_context(
+                _replaced(
+                    MemoryDataset, name, _default_seed(getattr(MemoryDataset, name), seed)
+                )
+            )
+        yield
+
+
+@contextlib.contextmanager
+def _replaced(owner: Any, name: str, value: Any) -> Iterator[None]:
+    """Set ``owner.name`` for the block, then put back exactly what was there."""
+    missing = object()
+    before = vars(owner).get(name, missing)
+    setattr(owner, name, value)
+    try:
+        yield
+    finally:
+        if before is missing:
+            delattr(owner, name)
+        else:
+            setattr(owner, name, before)
+
+
+def _seeded_hf_dataset(hf_dataset: Callable[..., Any], seed: int) -> Callable[..., Any]:
+    """``hf_dataset``, with an unseeded shuffle given ``seed``: the upstream call."""
+    signature = inspect.signature(hf_dataset)
+
+    @functools.wraps(hf_dataset)
+    def seeded(*args: Any, **kwargs: Any) -> Any:
+        try:
+            bound = signature.bind_partial(*args, **kwargs)
+        except TypeError:
+            # A call the real function rejects should fail with its own error.
+            return hf_dataset(*args, **kwargs)
+        arguments = bound.arguments
+        if arguments.get("shuffle") and arguments.get("seed") is None:
+            arguments["seed"] = seed
+        if arguments.get("shuffle_choices") is True:
+            arguments["shuffle_choices"] = seed
+        return hf_dataset(*bound.args, **bound.kwargs)
+
+    return seeded
+
+
+def _default_seed(method: Callable[..., None], default: int) -> Callable[..., None]:
+    """``method(seed=None)`` becomes ``method(seed=default)``; a given seed stands."""
+
+    @functools.wraps(method)
+    def seeded(self: Any, seed: int | None = None) -> None:
+        return method(self, default if seed is None else seed)
+
+    return seeded
+
+
+# --------------------------------------------------------------------------
 # Task resolution
 # --------------------------------------------------------------------------
 
@@ -227,6 +332,9 @@ def resolve_task(task_name: str, **task_args: Any) -> Any:
 
     Calling the task function is what downloads the dataset, so this is the
     expensive step and the one that fails for gated, sandboxed or oversized evals.
+    It is also where the dataset is shuffled, so it runs inside
+    :func:`seeded_shuffles`: every caller, on either arm, loads the same samples
+    with the same choice order every time.
     """
     from inspect_ai._util.registry import registry_create
 
@@ -235,7 +343,8 @@ def resolve_task(task_name: str, **task_args: Any) -> Any:
     else:
         import inspect_evals._registry  # noqa: F401  (populates the registry)
 
-    return registry_create("task", task_name, **task_args)
+    with seeded_shuffles():
+        return registry_create("task", task_name, **task_args)
 
 
 def scorer_names(task: Any) -> list[str]:
@@ -268,6 +377,9 @@ def task_samples(task: Any, limit: int | None = None) -> list[SampleView]:
     So the samples are sorted by sample id before the limit is applied. Sorting
     changes nothing about a full sweep -- every sample is scored either way --
     and it makes a limited sweep reproducible, which is what the control needs.
+
+    The sort fixes which samples are scored, not how each one's choices are
+    ordered. That is :func:`seeded_shuffles`' job, at load (defect 010).
     """
     dataset = getattr(task, "dataset", None)
     if dataset is None:

@@ -36,6 +36,14 @@ MAX_LABEL_CHARS = 100
 #: Seeds averaged over for the ``uniform`` reference baseline.
 UNIFORM_SEEDS: tuple[int, ...] = (0, 1, 2, 3, 4)
 
+#: The seed every shuffle a task leaves unseeded is pinned to while it loads
+#: (``drive.seeded_shuffles``, instrument defect 010). It is the seed upstream
+#: chose: #2404 (``truthfulqa``) and #2406 (``lab_bench``) call
+#: ``hf_dataset(shuffle=True, seed=42, shuffle_choices=42)``. On a task that
+#: shuffles its choices it decides which letter is the correct one, so it is in
+#: :func:`run_fingerprint`.
+SHUFFLE_SEED = 42
+
 
 # --------------------------------------------------------------------------
 # Normalisation helpers. Inspect samples carry targets as ``str | list[str]``
@@ -483,5 +491,20 @@ def battery_fingerprint() -> str:
     parts.append(
         "render: choice one->ANSWER: v; choice many->ANSWER: comma-joined; bare->identity"
     )
+    digest = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
+def run_fingerprint() -> str:
+    """A short stable digest of the battery and the load's shuffle seed.
+
+    The seed is kept out of :func:`battery_fingerprint` on purpose. That digest
+    is part of every graded cache key (``graded.GradedCache.key``), so folding
+    the seed into it would make every committed cache row unreachable, and a
+    re-run would pay to grade every cell again.
+    """
+    import hashlib
+
+    parts = [battery_fingerprint(), f"shuffle_seed={SHUFFLE_SEED}"]
     digest = hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
     return digest[:12]

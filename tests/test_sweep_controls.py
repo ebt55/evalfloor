@@ -171,29 +171,58 @@ def test_shuffled_datasets_still_yield_a_stable_limited_subset() -> None:
     different order. Before ``task_samples`` sorted by id, any ``--limit`` took a
     different subset each run and the determinism control failed for a reason
     that had nothing to do with this harness.
+
+    The tasks are built straight through the registry, not ``resolve_task``.
+    ``resolve_task`` seeds the shuffle now (defect 010), and two seeded loads
+    agree with or without the sort, so through it this test would pin nothing.
     """
-    from evalfloor.drive import resolve_task, task_samples
+    from inspect_ai._util.registry import registry_create
+
+    import inspect_evals._registry  # noqa: F401  (populates the registry)
+    from evalfloor.drive import task_samples
 
     for name in ("inspect_evals/paws", "inspect_evals/boolq"):
-        first = [s.id for s in task_samples(resolve_task(name), limit=50)]
-        second = [s.id for s in task_samples(resolve_task(name), limit=50)]
+        first_task = registry_create("task", name)
+        second_task = registry_create("task", name)
+        # The premise: unseeded, the two loads come back in different orders.
+        assert [s.id for s in first_task.dataset] != [
+            s.id for s in second_task.dataset
+        ], f"{name}: two unseeded loads agree, so this test no longer tests the sort"
+        first = [s.id for s in task_samples(first_task, limit=50)]
+        second = [s.id for s in task_samples(second_task, limit=50)]
         assert first == second, f"{name}: limited subset is not stable across calls"
 
 
 @pytest.mark.dataset
 def test_the_smoke_set_covers_every_scorer_family_in_the_twenty() -> None:
-    """If this fails the smoke set has stopped being representative."""
+    """If this fails the smoke set has stopped being representative.
+
+    Version-aware. ``paws`` is the twenty's only ``includes()`` task up to
+    0.20.0; from 0.21.0 (#2334) it is scored with an anchored ``pattern()``, so
+    ``pattern`` takes its place and the twenty have one family fewer.
+    """
+    import importlib.metadata as md
+
+    from packaging.version import Version
+
+    if Version(md.version("inspect_evals")) < Version("0.21.0"):
+        paws_family = "inspect_ai/includes"
+    else:
+        paws_family = "inspect_ai/pattern"
+
     families = set()
     for name in SMOKE_TASKS:
         run = _run_named(name, limit=1)
         assert run.error is None, f"{name}: {run.error}"
+        if name == "inspect_evals/paws":
+            assert run.scorers == [paws_family]
         families.update(run.scorers)
     assert families == {
         "inspect_ai/choice",
         "inspect_ai/match",
         "inspect_ai/pattern",
-        "inspect_ai/includes",
         "inspect_ai/f1",
+        paws_family,
     }
 
 
