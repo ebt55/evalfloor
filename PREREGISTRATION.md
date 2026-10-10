@@ -807,3 +807,23 @@ issue is filed upstream from this week's work.**
 results file alongside a battery fingerprint that covers the rendering rule. Rows
 produced under one version pair are never mixed with rows from another: on any
 bump, the whole sweep re-runs.
+
+
+---
+
+## 11. Close-out addendum -- 2026-10-10, written after the 17 Sep results existed and before any result on 0.24.0
+
+Moves no threshold. Ruled by Ebin on 2026-10-10: `lab_bench` is counted.
+
+1. **The countable list** is fixed by name in `cli.CLOSEOUT_TASKS`: 45 of the 58 tasks reachable on 0.20.0. These are the 20 of section 6, 8 more `choice()` tasks, 9 tasks with other deterministic scorers, and the 8 `lab_bench` tasks. The other 13 carry a `not_counted` row in `rulings.jsonl` with its reason and source line: 4 need solver state (`tau2_*`), 3 need a judge (`agentharm`, `agentharm_benign`, `vqa_rad`, whose open questions go to a grader), and 6 score behaviour, not answer correctness (`agent_threat_bench` x3, `air_bench`, `make_me_pay`, `stereoset`).
+2. **`lab_bench`** is scored on its own `accuracy()`: an "Insufficient information" answer is NOANSWER and counts 0. Its `precision()` is printed beside it and never used for a flag.
+3. **One release.** The list is swept whole on `inspect_evals` 0.24.0 with `inspect_ai` 0.3.263; 0.24.0 is the latest release on 2026-10-10. This supersedes the 20-task sweep on 0.20.0 (`316f142`), which stays in git. 0.20.0 stays installed only for the `paws` anchor test. The graded arm stays on 0.20.0, is not re-run, and carries its own pin. Arms are never added (section 8A), so no row mixes releases.
+4. **No task is added.** A listed task that is absent or fails on 0.24.0 is "not run", with its error (section 6). Reachable tasks in the 0.24.0 inventory that are not on the list are named and not run.
+5. **Thresholds are unchanged.** Section 1 stays at five, with ties counted and marked (section 8.5). Section 8A stays at three.
+6. **Polarity** is recorded per graded task in `verdict_maps.jsonl`, each value with its source line; an inverted flag is never called credit.
+7. **Determinism.**
+   - Every task load runs with unseeded shuffles pinned to seed 42. For `hf_dataset` this is `seed=42, shuffle_choices=42`, the call upstream adopted in #2404 (`truthfulqa`) and #2406 (`lab_bench`) after 0.24.0.
+   - The seed is stamped in every payload as `shuffle_seed` and in `run_fingerprint`. `battery_fingerprint` is unchanged.
+   - The list runs twice, in separate processes. A task whose two runs differ, or that errors in only one, is "not run: non-deterministic".
+8. **New flags.** A non-tie flag on 0.24.0 is traced to a source line and classified as a scorer defect, a task property or an instrument fault before anything is written about it. Only a scorer defect becomes an upstream issue.
+9. **The banner.** The "DRAFT" banner at the top of this file is historical; its first commit was `912345f8d5be`.

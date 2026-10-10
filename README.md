@@ -18,7 +18,7 @@ Preregistration `PREREGISTRATION.md` was committed at `912345f8d5be` **before** 
 
 **3 of 7** model-graded tasks have a content-free floor that clears their own majority baseline **at the Wilson 95% lower bound** -- a stricter rule than the deterministic arm's, because these rates are over a capped sample of 100 items per task per member rather than a whole dataset. This number is **never added** to the one above: the two arms have different denominators, different rules and different costs. Full tables in [`results/graded/floor_matrix.md`](results/graded/floor_matrix.md).
 
-3 of 7 flagged at the Wilson lower bound; the arm's preregistered negative result (fewer than three) does not hold.
+3 of 7 flagged at the Wilson lower bound; the arm's preregistered negative result (fewer than three) does not hold. All 3 flags are on tasks whose high score is the bad outcome.
 
 Judged by `openai/gpt-5.6-luna`. 
 
@@ -88,6 +88,7 @@ Defects are logged, not quietly fixed. What the instrument got wrong is what tel
 | 008 | the provider pin was requested on a channel that was overwritten | the judge-disagreement figure and the pinned cost line published in 255eb3a, both measured under routing that was never recorded |
 | 009 | the report applied the deterministic arm's rules to the graded arm | the graded verdict sentence, and three published numbers for an arm that did not run (the raw "0 of 7", the raw "0.0%" cells, "disagree on 3"); no measured number |
 | 010 | an unseeded choice shuffle made the first sweep non-reproducible | the reproducibility of the published count, and with it the section 1 verdict on 0.20.0: 4 is under five, 5 is not |
+| 011 | the flag rule assumed every task's score points the same way | no count; the reading of three graded flags, all on tasks whose high score is the bad outcome, and the implied denominator of 58 readable tasks |
 
 ## Limitations
 

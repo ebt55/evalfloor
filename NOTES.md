@@ -874,3 +874,29 @@ task with unmapped verdicts, which is every task that returns a dict.
 The control also ran on `tasks[0]`, whatever sorted first. It is now bound to
 `inspect_evals/coconot` -- the task the published prior was measured on -- and
 skips with a printed reason rather than moving to another task.
+
+---
+
+## 2026-10-10 -- close-out
+
+### Pre-flight on 0.24.0, read-only
+
+Checked on `.venv-024` (`inspect_ai` 0.3.263, `inspect_evals` 0.24.0) by
+importing the registry and reading installed source. **No task function was
+called**, so no dataset was downloaded; nothing on 0.24.0 was driven before
+section 11.
+
+* **All 45 close-out names are registered**, among the 250 tasks the 0.24.0
+  registry lists.
+* **`vqa_rad` still needs a grader.** `vqa_rad/scorer.py` imports
+  `schema_tool_graded_scorer` (line 20), defines `vqa_rad_graded_scorer`
+  (line 90) with `model_role: str | None = "grader"` (line 93), and builds
+  `_open_scorer = schema_tool_graded_scorer(` (line 106) with
+  `model_role=model_role` (line 117). Its `not_counted` row stands.
+* **The shuffles are still unseeded upstream on 0.24.0.** `truthfulqa.py:53`
+  passes `shuffle_choices=True`, and `lab_bench.py:68` declares
+  `shuffle_choices: bool = True`. The fixes (#2404, #2406) merged on 2026-10-09,
+  after 0.24.0 shipped, so on 0.24.0 the seed comes from the harness's load
+  (`drive.seeded_shuffles`, seed 42, upstream's).
+* **The latest PyPI release is still 0.24.0**, checked at 2026-10-10 14:01 UTC.
+  The pin is not moved.

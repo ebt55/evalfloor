@@ -19,6 +19,7 @@ Preregistration `PREREGISTRATION.md` was committed at `912345f8d5be` **before** 
 |---|---|
 | tasks declared in `eval.yaml` files | 237 |
 | reachable for the deterministic sweep | 58 |
+| reachable, not counted, with a treatment | 13 |
 | excluded, with a reason | 179 |
 | attempted in this run | 20 |
 | produced a scored floor | 20 |
@@ -38,6 +39,17 @@ Preregistration `PREREGISTRATION.md` was committed at `912345f8d5be` **before** 
 | **reachable** | **58** | the deterministic sweep can run these |
 | **declared total** | **237** | |
 
+## Not counted
+
+Reachable, and deliberately not swept. Each task has a `not_counted` row in `rulings.jsonl` that quotes the source line its treatment rests on, so the list is data rather than code.
+
+| treatment | tasks | which |
+|---|---|---|
+| scores behaviour, not answer correctness | 6 | `agent_threat_bench_autonomy_hijack`, `agent_threat_bench_data_exfil`, `agent_threat_bench_memory_poison`, `air_bench`, `make_me_pay`, `stereoset` |
+| needs solver state | 4 | `tau2_airline`, `tau2_banking`, `tau2_retail`, `tau2_telecom` |
+| needs a judge | 3 | `agentharm`, `agentharm_benign`, `vqa_rad` |
+| **not counted** | **13** | |
+
 ## Run failures
 
 None. Every task attempted in this run produced a scored floor.
@@ -48,12 +60,12 @@ None. Every task attempted in this run produced a scored floor.
 |---|---|---|---|---|---|
 | `inspect_evals/abstention_bench` | `abstention_bench_scorer(grader_model)` | `model_graded` | excluded | `extra_dependency` | eval.yaml: isolated: true (separate package) |
 | `inspect_evals/agent_bench_os` | `agent_bench_os_default_scorer()` | `deterministic_custom` | excluded | `network_required` | external assets: git_clone |
-| `inspect_evals/agent_threat_bench_autonomy_hijack` | `agent_threat_bench_scorer()` | `deterministic_custom` | reachable, not swept | `` |  |
-| `inspect_evals/agent_threat_bench_data_exfil` | `agent_threat_bench_scorer()` | `deterministic_custom` | reachable, not swept | `` |  |
-| `inspect_evals/agent_threat_bench_memory_poison` | `agent_threat_bench_scorer()` | `deterministic_custom` | reachable, not swept | `` |  |
+| `inspect_evals/agent_threat_bench_autonomy_hijack` | `agent_threat_bench_scorer()` | `deterministic_custom` | not counted | `not_counted` | scores behaviour, not answer correctness |
+| `inspect_evals/agent_threat_bench_data_exfil` | `agent_threat_bench_scorer()` | `deterministic_custom` | not counted | `not_counted` | scores behaviour, not answer correctness |
+| `inspect_evals/agent_threat_bench_memory_poison` | `agent_threat_bench_scorer()` | `deterministic_custom` | not counted | `not_counted` | scores behaviour, not answer correctness |
 | `inspect_evals/agentdojo` | `injection_task_scorer() if with_injections else user_task_scorer()` | `deterministic_custom` | excluded | `extra_dependency` | eval.yaml: dependency: agentdojo |
-| `inspect_evals/agentharm` | `combined_scorer(grading_module, refusal_judge_model, semantic_judge_model)` | `deterministic_custom` | reachable, not swept | `` |  |
-| `inspect_evals/agentharm_benign` | `combined_scorer(grading_module, refusal_judge_model, semantic_judge_model)` | `deterministic_custom` | reachable, not swept | `` |  |
+| `inspect_evals/agentharm` | `combined_scorer(grading_module, refusal_judge_model, semantic_judge_model)` | `deterministic_custom` | not counted | `not_counted` | needs a judge |
+| `inspect_evals/agentharm_benign` | `combined_scorer(grading_module, refusal_judge_model, semantic_judge_model)` | `deterministic_custom` | not counted | `not_counted` | needs a judge |
 | `inspect_evals/agentic_misalignment` | `[harmfulness_scorer(grader_model=grader_model)]` | `model_graded` | excluded | `extra_dependency` | eval.yaml: dependency: agentic_misalignment |
 | `inspect_evals/agie_aqua_rat` | `expression_equivalence() if dataset_name in CLOZE_TASK else choice()` | `model_graded` | excluded | `model_graded` | expression_equivalence: custom, calls a grader model; choice: inspect_ai builtin, pure function of completion and target |
 | `inspect_evals/agie_logiqa_en` | `expression_equivalence() if dataset_name in CLOZE_TASK else choice()` | `model_graded` | excluded | `model_graded` | expression_equivalence: custom, calls a grader model; choice: inspect_ai builtin, pure function of completion and target |
@@ -67,7 +79,7 @@ None. Every task attempted in this run produced a scored floor.
 | `inspect_evals/aime2024` | `[aime_scorer()]` | `deterministic_custom` | reachable, not swept | `` |  |
 | `inspect_evals/aime2025` | `[aime_scorer()]` | `deterministic_custom` | reachable, not swept | `` |  |
 | `inspect_evals/aime2026` | `[aime_scorer()]` | `deterministic_custom` | reachable, not swept | `` |  |
-| `inspect_evals/air_bench` | `air_bench_scorer()` | `deterministic_custom` | reachable, not swept | `` |  |
+| `inspect_evals/air_bench` | `air_bench_scorer()` | `deterministic_custom` | not counted | `not_counted` | scores behaviour, not answer correctness |
 | `inspect_evals/anima` | `anima_scorer(dimensions=dims_by_name, revision=dataset_revision, grader_models=grader_models, grader_config=grader_config)` | `model_graded` | excluded | `extra_dependency` | eval.yaml: dependency: anima |
 | `inspect_evals/ape_eval` | `ape_scorer()` | `deterministic_custom` | excluded | `network_required` | external assets: direct_url |
 | `inspect_evals/apps` | `verify()` | `sandbox` | excluded | `sandbox_required` | verify: custom, executes in a sandbox |
@@ -195,7 +207,7 @@ None. Every task attempted in this run produced a scored floor.
 | `inspect_evals/livebench` | `[decide_scorer()]` | `deterministic_custom` | excluded | `extra_dependency` | eval.yaml: isolated: true (separate package) |
 | `inspect_evals/livecodebench_pro` | `custom_scorer or livecodebench_pro_scorer()` | `sandbox` | excluded | `sandbox_required` | livecodebench_pro_scorer: custom, executes in a sandbox |
 | `inspect_evals/macbench` | `macbench_scorer()` | `deterministic_custom` | reachable, not swept | `` |  |
-| `inspect_evals/make_me_pay` | `make_me_pay_scorer()` | `deterministic_custom` | reachable, not swept | `` |  |
+| `inspect_evals/make_me_pay` | `make_me_pay_scorer()` | `deterministic_custom` | not counted | `not_counted` | scores behaviour, not answer correctness |
 | `inspect_evals/makemesay` | `makemesay_scorer()` | `deterministic_custom` | excluded | `extra_dependency` | eval.yaml: dependency: makemesay |
 | `inspect_evals/mask` | `[accuracy_and_honesty(honesty_at_n=honesty_at_n, binary_judge_model=binary_judge_model, numeric_judge_model=numeric_judge_model, numeric_tol=numeric_tol, no_belief_handling=NoBeliefConsistencyHandling(no_belief_handling), judge_config=judge_config)]` | `model_graded` | excluded | `model_graded` | accuracy_and_honesty: custom, calls a grader model; NoBeliefConsistencyHandling: custom, definition not found in this eval package |
 | `inspect_evals/math` | `[expression_equivalance(model=grader_model), expression_exact_match(), expression_exact_match_sympy()]` | `deterministic_custom` | excluded | `extra_dependency` | eval.yaml: dependency: math |
@@ -253,7 +265,7 @@ None. Every task attempted in this run produced a scored floor.
 | `inspect_evals/simpleqa_verified` | `_resolve_scorer(scorer, SIMPLEQA_VERIFIED_GRADER_TEMPLATE, grade_parse)` | `deterministic_custom` | excluded | `network_required` | external assets: direct_url |
 | `inspect_evals/sosbench` | `llm_judge_scorer(template=LLM_JUDGE_TEMPLATE)` | `model_graded` | excluded | `model_graded` | llm_judge_scorer: custom, calls a grader model |
 | `inspect_evals/squad` | `[f1(), exact()]` | `deterministic` | reachable, not swept | `` |  |
-| `inspect_evals/stereoset` | `[multiple_choice_scorer(), stereoset_scorer()]` | `deterministic_custom` | reachable, not swept | `` |  |
+| `inspect_evals/stereoset` | `[multiple_choice_scorer(), stereoset_scorer()]` | `deterministic_custom` | not counted | `not_counted` | scores behaviour, not answer correctness |
 | `inspect_evals/strong_reject` | `strong_reject_scorer(judge_llm)` | `model_graded` | excluded | `model_graded` | strong_reject_scorer: custom, calls a grader model |
 | `inspect_evals/swe_bench` | `scorer or swe_bench_scorer()` | `sandbox` | excluded | `sandbox_required` | swe_bench_scorer: custom, executes in a sandbox |
 | `inspect_evals/swe_bench_verified_mini` | `scorer or swe_bench_scorer()` | `sandbox` | excluded | `sandbox_required` | swe_bench_scorer: custom, executes in a sandbox |
@@ -261,17 +273,17 @@ None. Every task attempted in this run produced a scored floor.
 | `inspect_evals/sycophancy` | `sycophancy_scorer(scorer_model=scorer_model)` | `model_graded` | excluded | `model_graded` | sycophancy_scorer: custom, calls a grader model |
 | `inspect_evals/tac` | `tac_scorer()` | `deterministic_custom` | excluded | `gated_dataset` | gated on the Hub: CompassioninMachineLearning/tac |
 | `inspect_evals/tac_welfare` | `tac_scorer()` | `deterministic_custom` | excluded | `gated_dataset` | gated on the Hub: CompassioninMachineLearning/tac |
-| `inspect_evals/tau2_airline` | `airline_scorer()` | `deterministic_custom` | reachable, not swept | `` |  |
-| `inspect_evals/tau2_banking` | `banking_scorer()` | `deterministic_custom` | reachable, not swept | `` |  |
-| `inspect_evals/tau2_retail` | `retail_scorer()` | `deterministic_custom` | reachable, not swept | `` |  |
-| `inspect_evals/tau2_telecom` | `telecom_scorer()` | `deterministic_custom` | reachable, not swept | `` |  |
+| `inspect_evals/tau2_airline` | `airline_scorer()` | `deterministic_custom` | not counted | `not_counted` | needs solver state |
+| `inspect_evals/tau2_banking` | `banking_scorer()` | `deterministic_custom` | not counted | `not_counted` | needs solver state |
+| `inspect_evals/tau2_retail` | `retail_scorer()` | `deterministic_custom` | not counted | `not_counted` | needs solver state |
+| `inspect_evals/tau2_telecom` | `telecom_scorer()` | `deterministic_custom` | not counted | `not_counted` | needs solver state |
 | `inspect_evals/theagentcompany` | `get_scorer_for_task(task_name, scoring_mode=scoring_mode)` | `deterministic_custom` | excluded | `extra_dependency` | eval.yaml: dependency: theagentcompany |
 | `inspect_evals/threecb` | `best_elicitation_per_challenge()` | `deterministic_custom` | excluded | `sandbox_required` | eval directory ships a Dockerfile or compose file |
 | `inspect_evals/truthfulqa` | `choice()` | `deterministic` | flagged | `` |  |
 | `inspect_evals/uccb` | `model_graded_qa(template=UCCB_GRADING_TEMPLATE, model=scorer_model)` | `model_graded` | excluded | `model_graded` | model_graded_qa: inspect_ai builtin grader |
 | `inspect_evals/usaco` | `verify()` | `deterministic_custom` | excluded | `sandbox_required` | task declares sandbox= |
 | `inspect_evals/vimgolf_single_turn` | `vimgolf_scorer()` | `deterministic_custom` | excluded | `sandbox_required` | task declares sandbox= |
-| `inspect_evals/vqa_rad` | `vqa_rad_graded_scorer()` | `deterministic_custom` | reachable, not swept | `` |  |
+| `inspect_evals/vqa_rad` | `vqa_rad_graded_scorer()` | `deterministic_custom` | not counted | `not_counted` | needs a judge |
 | `inspect_evals/vstar_bench_attribute_recognition` | `choice()` | `deterministic` | flagged | `` |  |
 | `inspect_evals/vstar_bench_spatial_relationship_reasoning` | `choice()` | `deterministic` | swept, clean | `` |  |
 | `inspect_evals/winogrande` | `choice()` | `deterministic` | swept, clean | `` |  |
