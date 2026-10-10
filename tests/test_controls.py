@@ -450,6 +450,37 @@ def test_echo_headline_counts_are_computed_not_typed() -> None:
     assert "paws" in line
 
 
+def test_echo_headline_counts_tasks_not_floors_and_says_what_most_means() -> None:
+    """squad has two scorers, so the 0.24.0 sweep has 46 floors over 45 tasks;
+    the sentence said "of 46 tasks". And "the most" is the most samples credited,
+    which is not the highest rate, so the sentence says which."""
+    from evalfloor.report import echo_headline
+
+    f1 = _floor_with_echo("inspect_evals/squad", 200, 1000)
+    f1.scorer = "inspect_ai/f1"
+    exact = _floor_with_echo("inspect_evals/squad", 0, 1000)
+    exact.scorer = "inspect_ai/exact"
+    floors = [
+        f1,
+        exact,
+        # A higher rate on fewer samples: not "the most" by count.
+        _floor_with_echo("inspect_evals/gsm8k", 90, 100),
+        _floor_with_echo("inspect_evals/boolq", 0, 3270),
+    ]
+    for generic in (False, True):
+        line = echo_headline(floors, generic=generic)
+        assert line is not None
+        assert "**2 of 3** tasks swept" in line, "three tasks, two scoring above zero"
+    line = echo_headline(floors, generic=True)
+    assert (
+        "Counted in samples, the most is on `squad` (scorer `inspect_ai/f1`): "
+        "**200 of 1,000** samples"
+    ) in line
+    # A task with one scorer is named without one.
+    alone = echo_headline([_floor_with_echo("inspect_evals/gsm8k", 9, 100)], generic=True)
+    assert "the most is on `gsm8k`: **9 of 100**" in alone
+
+
 def test_echo_headline_is_absent_when_there_is_nothing_to_report() -> None:
     from evalfloor.report import echo_headline
 
@@ -1004,7 +1035,7 @@ def test_the_closeout_readme_renders_every_branch(tmp_path) -> None:
     assert "On 1 more, the placeholder answer is the modal answer" in first
     assert first.endswith("Preregistered negative result.")
     assert "Status: closed 2026-10-14; no further sweeps." in text
-    assert "The most is on `gsm8k`: **20 of 100** samples score as correct" in text
+    assert "Counted in samples, the most is on `gsm8k`: **20 of 100** samples" in text
     assert "already contain a label" not in text
 
     denominator = _between(text, "## The denominator", "## Determinism")
@@ -1132,3 +1163,180 @@ def test_the_closeout_readme_refuses_without_figures_or_the_anchor_inventory(
         "",
         "</details>",
     ]
+
+
+# --------------------------------------------------------------------------
+# 11. The real figure provider, as `report --repeat` uses it
+#
+# The figures are drawn once, into a temporary tree, by the provider's drawing
+# mode. `report` then runs there with the committed-figure mode: it checks the
+# images against the rows and never draws. The payload is a FIXTURE: the 0.20.0
+# anchor with paws as the fix leaves it, stamped as a close-out run.
+# --------------------------------------------------------------------------
+
+
+def _fixture_closeout_payload() -> dict:
+    """FIXTURE, not a measurement: 316f142's payload as a 0.24.0 close-out."""
+    import copy
+    import json
+
+    anchor = json.loads(_git_show("316f142:results/sweep.json"))
+    after = copy.deepcopy(anchor)
+    after["pins"]["inspect_evals"] = "0.24.0"
+    for row in after["floors"]:
+        if row["task"] == "inspect_evals/paws":
+            row["scorer"] = "inspect_ai/pattern"
+            for name in ("all_labels", "echo"):
+                row["members"][name].update(mean=0.0, n_correct=0)
+            row["members"]["format_only"]["example_completion"] = "ANSWER: B"
+            row["flagged"], row["flagged_by"] = False, []
+    after.update(
+        addendum_commit="27cdc33933db8d99adc1a4e9daf163a36813050a",
+        run_fingerprint="e498a3949683",
+        shuffle_seed=42,
+        closeout=True,
+        task_digests={t: f"{i:064x}" for i, t in enumerate(after["tasks"])},
+    )
+    return after
+
+
+def _fake_g2_capture() -> dict:
+    events = [
+        (0.5, "stdout", "line", "inspect_evals/paws  (inspect_ai 0.3.263, inspect_evals 0.24.0)"),
+        (0.6, "stdout", "line", "    all_labels       0.00%  0/8000"),
+        (0.7, "stderr", "line", "inspect_evals/paws: clean"),
+    ]
+    return {
+        "command": ["evalfloor", "check", "inspect_evals/paws"],
+        "display": "evalfloor check inspect_evals/paws",
+        "started_at": "2026-10-10T15:00:00+00:00",
+        "elapsed_s": 0.8,
+        "returncode": 0,
+        "events": [{"t": t, "stream": s, "kind": k, "text": x} for t, s, k, x in events],
+    }
+
+
+@pytest.fixture(scope="module")
+def drawn_tree(tmp_path_factory):
+    """A results tree, its rulings, and figures drawn from it by the provider."""
+    import json
+    import shutil
+
+    pytest.importorskip("matplotlib")
+    pytest.importorskip("PIL")
+    from evalfloor import closeout, figures
+    from evalfloor.report import prepare_floors, write_sweep
+    from evalfloor.rulings import load_rulings
+
+    tree = tmp_path_factory.mktemp("closeout_tree")
+    root = _root()
+    payload = _fixture_closeout_payload()
+    results = tree / "results"
+    write_sweep(payload, results / "sweep.json")
+    write_sweep(payload, tree / "repeat.json")
+    inventory = _git_show("316f142:results/task_inventory.json")
+    (results / "task_inventory.json").write_text(inventory, encoding="utf-8")
+    (results / "graded").mkdir()
+    (results / "graded" / "task_inventory.json").write_text(inventory, encoding="utf-8")
+    shutil.copy(root / "results" / "graded" / "sweep.json", results / "graded" / "sweep.json")
+    for name in ("rulings.jsonl", "verdict_maps.jsonl"):
+        shutil.copy(root / name, tree / name)
+    figs = tree / "docs" / "figures"
+    figs.mkdir(parents=True)
+    (figs / "g2-fake.json").write_text(json.dumps(_fake_g2_capture()), encoding="utf-8")
+
+    rules = load_rulings(tree / "rulings.jsonl")
+    _, floors, _, _, moved = prepare_floors(payload, rules, payload)
+    inv = json.loads(inventory)
+    counts = closeout.counts(floors, payload, rules, inv, inv, nondeterministic=moved)
+    draw = figures.make_figure_provider(
+        figs, results=results, rulings_path=tree / "rulings.jsonl", root=tree, draw=True
+    )
+    refs = draw(payload=payload, floors=floors, counts=counts, repeat=payload)
+    return tree, {r.id: r for r in refs}
+
+
+def _run_report_in(tree, monkeypatch, capsys):
+    """`evalfloor report --out results --repeat repeat.json`, run in ``tree``."""
+    from evalfloor import figures
+    from evalfloor.cli import main
+
+    show = figures.git_show
+    # The tree is not a repository; the anchor payload is read from this one.
+    monkeypatch.setattr(figures, "git_show", lambda ref, path, cwd=None: show(ref, path, cwd=_root()))
+    monkeypatch.chdir(tree)
+    code = main(["report", "--out", "results", "--repeat", "repeat.json"])
+    return code, capsys.readouterr()
+
+
+def test_report_places_the_committed_figures_without_drawing(
+    drawn_tree, tmp_path, monkeypatch, capsys
+) -> None:
+    """The close-out branch uses figures.make_figure_provider in its committed
+    mode: digests checked, CSVs rewritten, refs to the committed files. With
+    matplotlib and Pillow made unimportable it still works, so the data path
+    needs neither."""
+    import shutil
+    import sys
+
+    from evalfloor import figures
+
+    source, drawn = drawn_tree
+    tree = tmp_path / "tree"
+    shutil.copytree(source, tree)
+    figs = tree / "docs" / "figures"
+    before = {p.name: p.read_bytes() for p in figs.iterdir()}
+    for name in ("matplotlib", "matplotlib.pyplot", "PIL", "PIL.Image"):
+        monkeypatch.setitem(sys.modules, name, None)
+
+    code, out = _run_report_in(tree, monkeypatch, capsys)
+    assert code == 0, out.err
+    text = (tree / "README.md").read_text(encoding="utf-8")
+    for fig_id in ("F1", "F2", "F3"):
+        stem = figures.FIGURE_NAMES[fig_id]
+        digest = figures.embedded_digest(figs / f"{stem}-light.svg")
+        assert digest == drawn[fig_id].data_digest
+        assert f"<!-- figure {fig_id} data sha256:{digest} -->" in text
+        assert (
+            f'srcset="docs/figures/{stem}-dark.svg"><img src="docs/figures/{stem}-light.svg"'
+            in text
+        )
+    # The animations are their GIFs, plain images: a GIF cannot switch theme.
+    what_this_is = _between(text, "## What this is", "## The case that started it")
+    assert '<img src="docs/figures/g1-paws-battery.gif" alt="Animation' in what_this_is
+    assert "<picture>" not in what_this_is, "G1 is not a picture of F2's SVGs"
+    assert '<img src="docs/figures/g2-terminal.gif" alt=' in text
+    assert "Animated:" not in text
+    assert text.count('src="docs/figures/f2-paws-fix-light.svg"') == 1, "F2 only under the fix"
+    assert "inspect_evals/paws: clean" in text.split("## Reproducing it", 1)[1]
+    # Nothing drawn: every image is byte for byte what the drawing run left.
+    after = {p.name: p.read_bytes() for p in figs.iterdir()}
+    assert after == before
+
+
+def test_report_refuses_stale_figures_and_writes_nothing(
+    drawn_tree, tmp_path, monkeypatch, capsys
+) -> None:
+    import shutil
+
+    source, drawn = drawn_tree
+    for victim in ("f1-floor-light.svg", "g2-terminal.txt"):
+        tree = tmp_path / victim
+        shutil.copytree(source, tree)
+        path = tree / "docs" / "figures" / victim
+        text = path.read_text(encoding="utf-8")
+        if victim.endswith(".svg"):
+            digest = drawn["F1"].data_digest
+            assert digest in text
+            text = text.replace(digest, "f" * 64)
+        else:
+            text += "an edit\n"
+        path.write_bytes(text.encode("utf-8"))
+
+        code, out = _run_report_in(tree, monkeypatch, capsys)
+        assert code != 0, victim
+        assert "figures are stale: run python -m evalfloor.figures --out docs/figures" in out.err
+        assert victim in out.err
+        # Refused before a single file was written.
+        assert not (tree / "README.md").exists()
+        assert not (tree / "results" / "floor_matrix.md").exists()

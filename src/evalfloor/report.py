@@ -629,21 +629,28 @@ def echo_headline(floors: Sequence[TaskFloor], generic: bool = False) -> str | N
     if not with_echo:
         return None
 
-    above_zero = [f for f in with_echo if f.members["echo"].mean > 0.0]
+    # Counted in tasks, not floors: a task with two scorers (squad's f1 and
+    # exact) is one task swept, and scores above zero if either scorer does.
+    tasks_with_echo = {f.task for f in with_echo}
+    above_zero = {f.task for f in with_echo if f.members["echo"].mean > 0.0}
+    # The most samples credited, not the highest rate. Floors arrive sorted by
+    # task and scorer, so a tie goes to the first, the same on every run.
     worst = max(with_echo, key=lambda f: f.members["echo"].n_correct)
     worst_echo = worst.members["echo"]
 
     sentence = (
         f"Echoing the question back scores above zero on **{len(above_zero)} of "
-        f"{len(with_echo)}** tasks swept."
+        f"{len(tasks_with_echo)}** tasks swept."
     )
     if worst_echo.n_correct > 0 and generic:
         short = worst.task.split("/")[-1]
+        n_scorers = sum(1 for f in with_echo if f.task == worst.task)
+        where = f"`{short}`" + (f" (scorer `{worst.scorer}`)" if n_scorers > 1 else "")
         sentence += (
-            f" The most is on `{short}`: **{worst_echo.n_correct:,} of "
-            f"{worst_echo.n_scored:,}** samples score as correct when their own input "
-            f"is handed back as the answer, against a {_pct(worst.majority)} `majority` "
-            "baseline. Whatever the scorer credits there was in the question."
+            f" Counted in samples, the most is on {where}: **{worst_echo.n_correct:,} "
+            f"of {worst_echo.n_scored:,}** samples score as correct when their own "
+            f"input is handed back as the answer, against a {_pct(worst.majority)} "
+            "`majority` baseline. Whatever the scorer credits there was in the question."
         )
     elif worst_echo.n_correct > 0:
         short = worst.task.split("/")[-1]
@@ -1473,10 +1480,13 @@ class FigureRef:
     caption: str
     #: sha256 of the data the figure was drawn from.
     data_digest: str
+    #: The picture in each colour scheme, for a static figure.
     light_svg: str
     dark_svg: str
     #: The same data as a markdown table, printed under the figure.
     table_md: str
+    #: When set, the figure IS this animation, embedded as a plain image: a GIF
+    #: has one colour scheme, so the two SVG fields are not used for it.
     gif: str | None = None
     #: A text transcript, for a figure that records a terminal session.
     transcript: str | None = None
@@ -1488,17 +1498,23 @@ FigureProvider = Callable[..., Sequence[FigureRef]]
 
 
 def render_figure(fig: FigureRef) -> list[str]:
-    """A figure as markdown: light and dark SVG, caption, digest, data."""
-    lines = [
-        '<picture><source media="(prefers-color-scheme: dark)" '
-        f'srcset="{html.escape(fig.dark_svg, quote=True)}">'
-        f'<img src="{html.escape(fig.light_svg, quote=True)}" '
-        f'alt="{html.escape(fig.alt, quote=True)}"></picture>',
-        "",
-        fig.caption,
-    ]
+    """A figure as markdown: the picture, caption, digest, data.
+
+    A static figure is a ``<picture>`` that switches between its light and dark
+    SVG. An animation is its GIF as a plain ``<img>``: a GIF cannot switch with
+    the theme, and a ``<picture>`` of some other figure's SVGs under an
+    animation's alt text would describe one image and show another.
+    """
+    alt = html.escape(fig.alt, quote=True)
     if fig.gif:
-        lines += ["", f"Animated: [{fig.id}]({fig.gif})"]
+        picture = f'<img src="{html.escape(fig.gif, quote=True)}" alt="{alt}">'
+    else:
+        picture = (
+            '<picture><source media="(prefers-color-scheme: dark)" '
+            f'srcset="{html.escape(fig.dark_svg, quote=True)}">'
+            f'<img src="{html.escape(fig.light_svg, quote=True)}" alt="{alt}"></picture>'
+        )
+    lines = [picture, "", fig.caption]
     lines += [
         "",
         f"<!-- figure {fig.id} data sha256:{fig.data_digest} -->",
@@ -2021,10 +2037,14 @@ def render_closeout_readme(
     pins_line = closeout.pins_line(
         payload.get("pins") or {}, (graded_payload or {}).get("pins")
     )
+    run_fp = payload.get("run_fingerprint")
     lines.extend(
         _readme_limitations(
-            f"| Two arms, two pins | {pins_line} Each arm's pins and fingerprint are "
-            "the ones its own `sweep.json` recorded, and no rate mixes releases. |"
+            f"| Two arms, two pins | {pins_line} The deterministic arm was measured on "
+            f"{_measured_on(payload)}"
+            + (f", run fingerprint `{run_fp}`" if run_fp else "")
+            + f"; the model-graded arm on {_measured_on(graded_payload)}. Each is what "
+            "that arm's own `sweep.json` recorded, and no rate mixes releases. |"
         )
     )
 
@@ -2174,6 +2194,61 @@ def readme_is_written_here(
     return payload_arm(payload) == "deterministic" and repeat is not None
 
 
+def build_readme(
+    payload: dict[str, Any],
+    out_dir: pathlib.Path,
+    rules: Sequence[Ruling],
+    floors_after: Sequence[TaskFloor],
+    inventory: Sequence[dict[str, Any]] | None,
+    repeat: dict[str, Any] | None = None,
+    moved: Sequence[str] = (),
+    figure_provider: FigureProvider | None = None,
+) -> str | None:
+    """README.md's text as this regeneration would write it, or None when this
+    regeneration does not write the README (see :func:`readme_is_written_here`).
+
+    Writes nothing. For the close-out README it reads both inventories, computes
+    ``closeout.counts`` once, and asks ``figure_provider`` for the figures; any
+    of those refusing raises here, before a file is touched.
+    """
+    arms = readme_arms(payload, floors_after, out_dir, rules)
+    if not readme_is_written_here(payload, arms, repeat):
+        return None
+    inputs: CloseoutReadme | None = None
+    figures: list[FigureRef] | None = None
+    if arms["payload"].get("addendum_commit"):
+        # Only the deterministic arm, with its second run, gets here.
+        root = results_root(out_dir)
+        release_inventory = _required_inventory(root / "task_inventory.json")
+        anchor_inventory = _required_inventory(root / "graded" / "task_inventory.json")
+        counts = closeout.counts(
+            floors_after, payload, rules, release_inventory, anchor_inventory,
+            nondeterministic=moved,
+        )
+        inputs = CloseoutReadme(
+            counts=counts,
+            rules=rules,
+            release_inventory=release_inventory,
+            repeat_digest=(repeat or {}).get("digest"),
+            moved=tuple(moved),
+        )
+        if figure_provider is not None:
+            figures = list(
+                figure_provider(
+                    payload=payload, floors=floors_after, counts=counts, repeat=repeat
+                )
+            )
+    return render_readme(
+        arms["floors"],
+        inventory,
+        arms["payload"],
+        graded_floors=arms["graded_floors"],
+        graded_payload=arms["graded_payload"],
+        closeout_inputs=inputs,
+        figures=figures,
+    )
+
+
 def write_all(
     payload: dict[str, Any],
     out_dir: pathlib.Path,
@@ -2190,10 +2265,12 @@ def write_all(
 
     ``figure_provider`` builds the close-out README's figures. Without one, a
     close-out README refuses to render: it never goes out with holes in it.
+
+    Every file is rendered before any is written, so a refusal -- stale
+    figures, a missing inventory -- leaves all of them as they were.
     """
     from .rulings import load_rulings, not_counted
 
-    out_dir.mkdir(parents=True, exist_ok=True)
     rules = load_rulings(rulings_path)
     floors_before, floors_after, applied, unmatched, moved = prepare_floors(
         payload, rules, repeat
@@ -2203,72 +2280,33 @@ def write_all(
     # files never mention them, so they stay byte-identical when the rows land.
     listed = not_counted(rules) if payload_arm(payload) == "deterministic" else []
 
-    written: list[pathlib.Path] = []
-
-    matrix = out_dir / "floor_matrix.md"
-    matrix.write_text(
-        render_matrix(floors_before, floors_after, digest, payload), encoding="utf-8"
-    )
-    written.append(matrix)
-
+    texts: list[tuple[pathlib.Path, str]] = [
+        (out_dir / "floor_matrix.md", render_matrix(floors_before, floors_after, digest, payload))
+    ]
     if inventory is not None:
-        coverage = out_dir / "coverage.md"
-        coverage.write_text(
-            render_coverage(
-                inventory, payload.get("tasks", []), floors_after, digest, payload,
-                not_counted=listed,
-            ),
-            encoding="utf-8",
+        texts.append(
+            (
+                out_dir / "coverage.md",
+                render_coverage(
+                    inventory, payload.get("tasks", []), floors_after, digest, payload,
+                    not_counted=listed,
+                ),
+            )
         )
-        written.append(coverage)
-
-    rulings_md = out_dir / "rulings_applied.md"
-    rulings_md.write_text(
-        render_rulings(applied, unmatched, not_counted=listed), encoding="utf-8"
+    texts.append(
+        (out_dir / "rulings_applied.md", render_rulings(applied, unmatched, not_counted=listed))
     )
-    written.append(rulings_md)
-
-    arms = readme_arms(payload, floors_after, out_dir, rules) if readme_path else {}
-    if readme_path is not None and readme_is_written_here(payload, arms, repeat):
-        inputs: CloseoutReadme | None = None
-        figures: list[FigureRef] | None = None
-        if arms["payload"].get("addendum_commit"):
-            # Only the deterministic arm, with its second run, gets here.
-            root = results_root(out_dir)
-            release_inventory = _required_inventory(root / "task_inventory.json")
-            anchor_inventory = _required_inventory(root / "graded" / "task_inventory.json")
-            counts = closeout.counts(
-                floors_after, payload, rules, release_inventory, anchor_inventory,
-                nondeterministic=moved,
-            )
-            inputs = CloseoutReadme(
-                counts=counts,
-                rules=rules,
-                release_inventory=release_inventory,
-                repeat_digest=(repeat or {}).get("digest"),
-                moved=tuple(moved),
-            )
-            if figure_provider is not None:
-                figures = list(
-                    figure_provider(
-                        payload=payload, floors=floors_after, counts=counts, repeat=repeat
-                    )
-                )
-        readme_path.write_text(
-            render_readme(
-                arms["floors"],
-                inventory,
-                arms["payload"],
-                graded_floors=arms["graded_floors"],
-                graded_payload=arms["graded_payload"],
-                closeout_inputs=inputs,
-                figures=figures,
-            ),
-            encoding="utf-8",
+    if readme_path is not None:
+        readme = build_readme(
+            payload, out_dir, rules, floors_after, inventory, repeat, moved, figure_provider
         )
-        written.append(readme_path)
+        if readme is not None:
+            texts.append((readme_path, readme))
 
-    return written
+    out_dir.mkdir(parents=True, exist_ok=True)
+    for path, text in texts:
+        path.write_text(text, encoding="utf-8")
+    return [path for path, _ in texts]
 
 
 def _required_inventory(path: pathlib.Path) -> list[dict[str, Any]]:

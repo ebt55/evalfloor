@@ -39,6 +39,7 @@ from .report import (
     negative_result_threshold,
     raw_arm_clause,
     read_sweep,
+    results_root,
     write_all,
     write_sweep,
 )
@@ -151,6 +152,9 @@ GRADED_BUDGET_REAL = 30.0
 DEFAULT_RESULTS = pathlib.Path("results")
 DEFAULT_RULINGS = pathlib.Path("rulings.jsonl")
 DEFAULT_INVENTORY_JSON = DEFAULT_RESULTS / "task_inventory.json"
+
+#: Where the committed README figures live, relative to the README.
+FIGURES_DIR = pathlib.Path("docs/figures")
 
 EXIT_OK = 0
 EXIT_FLAGGED = 1
@@ -565,6 +569,7 @@ def _regenerate(
     payload: dict[str, Any],
     readme: bool = True,
     repeat: dict[str, Any] | None = None,
+    figure_provider: Any = None,
 ) -> list[pathlib.Path]:
     return write_all(
         payload,
@@ -574,6 +579,7 @@ def _regenerate(
         # A smoke run never rewrites the README. Its numbers are not results.
         readme_path=pathlib.Path("README.md") if readme else None,
         repeat=repeat,
+        figure_provider=figure_provider,
     )
 
 
@@ -989,9 +995,31 @@ def cmd_report(args: argparse.Namespace) -> int:
                 print(f"  {problem}", file=sys.stderr)
             return EXIT_UNRUNNABLE
     readme = not payload.get("smoke", False) and not args.no_readme
-    written = _regenerate(
-        out, pathlib.Path(args.rulings), payload, readme=readme, repeat=repeat
-    )
+    figure_provider = None
+    if readme and repeat is not None and payload.get("addendum_commit"):
+        # The close-out README's figures are the committed ones in docs/figures,
+        # checked against these results and never redrawn here. figures is
+        # imported on this path only, and with draw=False it imports neither
+        # matplotlib nor Pillow.
+        from . import figures
+
+        figure_provider = figures.make_figure_provider(
+            FIGURES_DIR,
+            results=results_root(out),
+            rulings_path=pathlib.Path(args.rulings),
+            draw=False,
+        )
+    try:
+        written = _regenerate(
+            out, pathlib.Path(args.rulings), payload, readme=readme, repeat=repeat,
+            figure_provider=figure_provider,
+        )
+    except (ValueError, FileNotFoundError, subprocess.CalledProcessError) as exc:
+        if figure_provider is None:
+            raise
+        # Nothing has been written: write_all renders every file first.
+        print(f"refusing to write the close-out README: {exc}", file=sys.stderr)
+        return EXIT_UNRUNNABLE
     # The same floors write_all read: one preparation, never a second recipe.
     floors, after, _, _, moved = prepare_floors(
         payload, load_rulings(pathlib.Path(args.rulings)), repeat

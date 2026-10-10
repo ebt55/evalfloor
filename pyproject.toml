@@ -34,6 +34,10 @@ graded = [
     "openai>=1.60",
 ]
 
+# README figures only (`python -m evalfloor.figures`). The GIFs need Pillow,
+# which matplotlib already depends on. Nothing in a sweep imports either.
+figures = ["matplotlib>=3.9"]
+
 [project.scripts]
 evalfloor = "evalfloor.cli:main"
 

@@ -1,0 +1,8 @@
+# Generated figure data and images: LF in the repo and in every checkout, so
+# the committed bytes equal what python -m evalfloor.figures writes.
+docs/figures/*.csv text eol=lf
+docs/figures/*.svg text eol=lf
+docs/figures/*.txt text eol=lf
+docs/figures/*.json text eol=lf
+*.png binary
+*.gif binary

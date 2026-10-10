@@ -1242,26 +1242,44 @@ def _committed(arm: str = "graded"):
     return payload, before, after
 
 
+def _stub_figures(**_kwargs):
+    """Placeholder figures, for tests that read the README's text, not its
+    figures; the real provider is tested in tests/test_controls.py."""
+    from evalfloor.report import README_FIGURES, FigureRef
+
+    return [
+        FigureRef(id=i, alt=i, caption=i, data_digest="0" * 64, light_svg=f"{i}.svg",
+                  dark_svg=f"{i}.svg", table_md="| - |")
+        for i in README_FIGURES
+    ]
+
+
 def _committed_readme() -> str:
-    """The README exactly as `evalfloor report --out results` builds it."""
-    from evalfloor.report import readme_arms, render_readme
+    """The README as `evalfloor report` builds it from the results on disk.
+
+    For a close-out payload that is `report --out results --repeat ...`, which
+    reads the second run from results/smoke/repeat; until that run exists the
+    payload stands in as its own repeat. The figures are stubs: these tests
+    read text.
+    """
+    from evalfloor.report import build_readme, prepare_floors, read_sweep
     from evalfloor.rulings import load_rulings
 
     root = _repo_root()
-    payload, _, after = _committed("deterministic")
-    arms = readme_arms(
-        payload, after, root / "results", load_rulings(root / "rulings.jsonl")
+    results = root / "results"
+    payload = read_sweep(results / "sweep.json")
+    rules = load_rulings(root / "rulings.jsonl")
+    repeat = None
+    if payload.get("addendum_commit"):
+        second = results / "smoke" / "repeat" / "sweep.json"
+        repeat = read_sweep(second) if second.exists() else payload
+    _, after, _, _, moved = prepare_floors(payload, rules, repeat)
+    inventory = json.loads((results / "task_inventory.json").read_text(encoding="utf-8"))
+    text = build_readme(
+        payload, results, rules, after, inventory, repeat, moved, _stub_figures
     )
-    inventory = json.loads(
-        (root / "results" / "task_inventory.json").read_text(encoding="utf-8")
-    )
-    return render_readme(
-        arms["floors"],
-        inventory,
-        arms["payload"],
-        graded_floors=arms["graded_floors"],
-        graded_payload=arms["graded_payload"],
-    )
+    assert text is not None
+    return text
 
 
 GRADED_VERDICT_3_OF_7 = (
