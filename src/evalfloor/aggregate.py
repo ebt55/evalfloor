@@ -374,6 +374,44 @@ def flag_rate(floors: Sequence[TaskFloor], arm: str = "rendered") -> tuple[int, 
     return len(flagged & scored), len(scored)
 
 
+def _digest_record(run: TaskRun) -> list[Any]:
+    """The parts of one task's run that must be reproducible, in a fixed order.
+
+    Excludes wall-clock timings, which vary between runs by design. Arms are
+    sorted, so the order they were driven in cannot move a digest.
+    """
+    return [
+        run.task,
+        run.scorers,
+        run.n_samples,
+        run.n_distinct_labels,
+        run.majority_label,
+        round(run.majority_share, 12),
+        run.answer_template,
+        run.error,
+        [
+            [
+                a.scorer,
+                a.member,
+                a.seed,
+                a.arm,
+                a.example_completion[:200],
+                a.n_scored,
+                a.n_correct,
+                a.n_errors,
+                round(a.score_sum, 9),
+                a.applicable,
+            ]
+            for a in sorted(run.arms, key=lambda a: (a.scorer, a.member, a.arm, a.seed))
+        ],
+    ]
+
+
+def _digest(records: list[Any]) -> str:
+    blob = json.dumps(records, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+
+
 def sweep_digest(runs: Sequence[TaskRun]) -> str:
     """A digest over only the parts of a sweep that must be reproducible.
 
@@ -381,36 +419,18 @@ def sweep_digest(runs: Sequence[TaskRun]) -> str:
     the deterministic arms must produce the same digest; if they do not, that is
     an instrument defect and gets logged rather than smoothed.
     """
-    payload: list[Any] = []
+    return _digest([_digest_record(run) for run in sorted(runs, key=lambda r: r.task)])
+
+
+def task_digests(runs: Sequence[TaskRun]) -> dict[str, str]:
+    """One digest per task, over the same record :func:`sweep_digest` covers.
+
+    When two sweeps' digests differ, these say which tasks moved; section 11.7
+    makes each of those "not run: non-deterministic". A task's digest is the
+    sweep digest of that task alone, so a one-task sweep's two digests agree.
+    A task driven twice in one sweep gets one digest over both runs, in order.
+    """
+    records: dict[str, list[Any]] = {}
     for run in sorted(runs, key=lambda r: r.task):
-        payload.append(
-            [
-                run.task,
-                run.scorers,
-                run.n_samples,
-                run.n_distinct_labels,
-                run.majority_label,
-                round(run.majority_share, 12),
-                run.answer_template,
-                run.error,
-                [
-                    [
-                        a.scorer,
-                        a.member,
-                        a.seed,
-                        a.arm,
-                        a.example_completion[:200],
-                        a.n_scored,
-                        a.n_correct,
-                        a.n_errors,
-                        round(a.score_sum, 9),
-                        a.applicable,
-                    ]
-                    for a in sorted(
-                        run.arms, key=lambda a: (a.scorer, a.member, a.arm, a.seed)
-                    )
-                ],
-            ]
-        )
-    blob = json.dumps(payload, sort_keys=True, separators=(",", ":"))
-    return hashlib.sha256(blob.encode("utf-8")).hexdigest()
+        records.setdefault(run.task, []).append(_digest_record(run))
+    return {task: _digest(rows) for task, rows in records.items()}

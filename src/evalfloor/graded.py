@@ -1003,6 +1003,12 @@ KNOWN_VALUE_STRINGS: frozenset[str] = frozenset({"C", "P", "I", "N"})
 
 DEFAULT_VERDICT_MAPS_PATH = pathlib.Path("verdict_maps.jsonl")
 
+#: Which way a task's score points for the model under test. ``credit``: a high
+#: score is the good outcome (a correct answer, an honest one). ``inverted``: a
+#: high score is the bad outcome (complied with a harmful request, refused a
+#: benign one). The flag rule assumes credit; an inverted flag is never credit.
+VALID_POLARITIES: frozenset[str] = frozenset({"credit", "inverted"})
+
 
 @dataclass(frozen=True)
 class VerdictMap:
@@ -1021,19 +1027,34 @@ class VerdictMap:
     A row with an empty ``map`` is a **note row**: it records something about a
     task's verdicts (a polarity, a value deliberately left unmapped) without
     mapping anything. It is still refused at load time unless it quotes a source.
+
+    ``polarity`` says which way the score points (``VALID_POLARITIES``), and
+    ``polarity_source`` names the file and line that says so. Neither touches
+    scoring: :func:`map_verdict` never reads them. A row without a polarity is
+    a task whose polarity is not recorded, never one assumed to be credit.
     """
 
     task: str
     values: dict[str, float] = field(default_factory=dict)
     key: str | None = None
     note: str = ""
+    polarity: str | None = None
+    polarity_source: str = ""
 
     def get(self, verdict: str) -> float | None:
         return self.values.get(verdict.strip().lower())
 
 
 def load_verdict_maps(path: pathlib.Path | None = None) -> dict[str, VerdictMap]:
-    """Read the committed per-eval verdict vocabulary map."""
+    """Read the committed per-eval verdict vocabulary map.
+
+    Refuses a row with no ``source``, a ``polarity`` outside
+    ``VALID_POLARITIES``, a polarity without a ``polarity_source`` that names a
+    file and line, and a ``polarity_source`` with no polarity (a misspelt key
+    would otherwise drop a recorded polarity without a word).
+    """
+    import re
+
     path = path or DEFAULT_VERDICT_MAPS_PATH
     maps: dict[str, VerdictMap] = {}
     if not path.exists():
@@ -1055,14 +1076,46 @@ def load_verdict_maps(path: pathlib.Path | None = None) -> dict[str, VerdictMap]
                 f"{path}: verdict map for {task} has no `source`. Every mapping must "
                 "quote the eval source line it was read from."
             )
+        polarity = row.get("polarity")
+        polarity_source = str(row.get("polarity_source") or "")
+        if polarity is not None and (
+            not isinstance(polarity, str) or polarity not in VALID_POLARITIES
+        ):
+            raise ValueError(
+                f"{path}: {task} has polarity {polarity!r}; it must be one of "
+                + ", ".join(sorted(VALID_POLARITIES))
+                + "."
+            )
+        if polarity is not None and not re.search(r"\S+\.\w+:\d+", polarity_source):
+            raise ValueError(
+                f"{path}: {task} records a polarity with no `polarity_source` naming "
+                "a file and line. A polarity is a reading of the eval's source and "
+                "must quote where it was read."
+            )
+        if polarity is None and polarity_source:
+            raise ValueError(
+                f"{path}: {task} has a `polarity_source` but no `polarity`."
+            )
         key = row.get("key")
         maps[task] = VerdictMap(
             task=str(task),
             values={str(k).strip().lower(): float(v) for k, v in mapping.items()},
             key=str(key) if key else None,
             note=str(row.get("note") or ""),
+            polarity=polarity,
+            polarity_source=polarity_source,
         )
     return maps
+
+
+def polarity_for(task: str, maps: dict[str, VerdictMap]) -> str | None:
+    """``"credit"``, ``"inverted"``, or ``None`` when no polarity is recorded.
+
+    ``None`` is not a default of credit. The report prints it as "polarity not
+    recorded" rather than guessing which way a score points.
+    """
+    vmap = maps.get(task)
+    return vmap.polarity if vmap is not None else None
 
 
 def map_verdict(
