@@ -26,6 +26,7 @@ Rulings are read by attribute (``task``, ``action``, ``source``, ``scorer``,
 from __future__ import annotations
 
 import datetime
+import re
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -314,8 +315,8 @@ def fix_clause(c: CloseoutCounts, floors: Sequence[TaskFloor]) -> str:
     )
     shortfalls = _fix_shortfalls(c, floors)
     if not shortfalls:
-        return f"{lead}, and this sweep confirms the fix."
-    return f"{lead}; in this sweep {' and '.join(shortfalls)}, so it does not confirm the fix."
+        return f"{lead}. This sweep confirms the fix."
+    return f"{lead}. In this sweep {' and '.join(shortfalls)}, so it does not confirm the fix."
 
 
 def _note_source(task: str, scorer: str, rulings: Sequence[Any]) -> str | None:
@@ -330,18 +331,53 @@ def _note_source(task: str, scorer: str, rulings: Sequence[Any]) -> str | None:
     return source
 
 
+#: A source-code citation as a ruling writes it: ``bbh.py:98-108``, ``src/r.py:41``.
+_CITATION = re.compile(r"[\w./\\-]+\.py:\d+(?:-\d+)?")
+#: A parenthesised aside holding at least one citation, with the space before it.
+_CITED_ASIDE = re.compile(r"\s*\([^()]*?" + _CITATION.pattern + r"[^()]*\)")
+#: A bare citation, with the colon that may follow it and the space around it.
+_BARE_CITATION = re.compile(r"\s*" + _CITATION.pattern + r":?\s*")
+
+
+def citations(source: str) -> list[str]:
+    """Every file:line citation in a ruling's source, in order, once each."""
+    found: list[str] = []
+    for hit in _CITATION.findall(source):
+        if hit not in found:
+            found.append(hit)
+    return found
+
+
+def _without_citations(source: str) -> str:
+    """A ruling's source with its file:line citations taken out, for the lead."""
+    text = _BARE_CITATION.sub(" ", _CITED_ASIDE.sub("", source))
+    return " ".join(text.split())
+
+
 def _real_flag(task: str, floors: Sequence[TaskFloor], rulings: Sequence[Any]) -> str:
-    """One real flag: the task, its best flagging member, both rates, the cause."""
+    """One real flag in plain sentences: the task, its best flagging member and
+    both rates, then the cause. The cause's file:line citations are left out
+    here; :func:`citations_line` carries them at the end of the section."""
     floor = representative_floor([f for f in floors if f.task == task])
     if floor.error is not None or not floor.flagged or floor.collision:
         raise ValueError(f"{task} is counted as a real flag, but its floors carry none")
-    member =min(floor.flagged_by, key=lambda m: (-floor.members[m].mean, m))
+    member = min(floor.flagged_by, key=lambda m: (-floor.members[m].mean, m))
     rates = (
-        f"`{task}`, where `{member}` scores {_pct(floor.members[member].mean)} "
-        f"against a {_pct(floor.majority)} baseline"
+        f"On `{task}`, `{member}` scores {_pct(floor.members[member].mean)} "
+        f"against a {_pct(floor.majority)} baseline."
     )
     source = _note_source(task, floor.scorer, rulings)
-    return f"{rates} because {source}" if source else f"{rates} ({UNCLASSIFIED})"
+    if not source:
+        return f"{rates} The cause is {UNCLASSIFIED}."
+    return f"{rates} The reason is that {_without_citations(source)}."
+
+
+def _ties_sentence(K: int, more: bool) -> str:
+    """The ties by construction, in plain words, with the §8.5 pointer."""
+    return (
+        f"On {K}{' more' if more else ''}, the placeholder answer is also the most "
+        "common answer, so its score ties the baseline by construction (§8.5)."
+    )
 
 
 def first_line(
@@ -349,7 +385,8 @@ def first_line(
 ) -> str:
     """The README's opening paragraph, for ``real == 0`` and for ``real >= 1``.
 
-    A real flag's cause is the ``source`` of a ``note`` ruling on that task, or
+    Plain sentences, one idea each. A real flag's cause is the ``source`` of a
+    ``note`` ruling on that task, with its file:line citations taken out, or
     "unclassified" until the triage writes one.
     """
     rulings = list(rulings)
@@ -361,19 +398,38 @@ def first_line(
     if c.real == 0:
         if c.K:
             middle = (
-                "None reached its majority baseline except by construction: on "
-                f"{c.K}, the placeholder answer is the modal answer (§8.5)."
+                "None reached its majority baseline except as a tie. "
+                f"{_ties_sentence(c.K, more=False)}"
             )
         else:
             middle = "None reached its majority baseline."
     else:
-        items = "; ".join(_real_flag(task, floors, rulings) for task in c.real_flags)
-        middle = f"{c.real} reached its majority baseline other than by construction: {items}."
+        reached = _plural(
+            c.real,
+            "reached its majority baseline outright, not as a tie",
+            "reached their majority baselines outright, not as ties",
+        )
+        items = " ".join(_real_flag(task, floors, rulings) for task in c.real_flags)
+        middle = f"{c.real} {reached}. {items}"
         if c.K:
-            middle += (
-                f" On {c.K} more, the placeholder answer is the modal answer (§8.5)."
-            )
+            middle += f" {_ties_sentence(c.K, more=True)}"
     return f"{opening} {middle} {fix_clause(c, floors)}"
+
+
+def citations_line(
+    c: CloseoutCounts, floors: Sequence[TaskFloor], rulings: Iterable[Any]
+) -> str:
+    """The file:line citations behind each real flag's cause, one sentence per
+    task, for the end of section 1. "" when no ruling cites a line."""
+    rulings = list(rulings)
+    sentences: list[str] = []
+    for task in c.real_flags:
+        floor = representative_floor([f for f in floors if f.task == task])
+        source = _note_source(task, floor.scorer, rulings)
+        cited = citations(source) if source else []
+        if cited:
+            sentences.append(f"Lines cited in the `{task}` ruling: {', '.join(cited)}.")
+    return " ".join(sentences)
 
 
 # --------------------------------------------------------------------------

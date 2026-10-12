@@ -1998,6 +1998,11 @@ def render_closeout_readme(
     if echo_line:
         lines.append(echo_line)
         lines.append("")
+    # The file:line citations behind each real flag's cause, kept out of the lead.
+    cited_line = closeout.citations_line(c, floors, rules)
+    if cited_line:
+        lines.append(cited_line)
+        lines.append("")
 
     lines.append("## The denominator")
     lines.append("")

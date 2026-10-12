@@ -19,6 +19,7 @@ from evalfloor.closeout import (
     LIST_FIXED_AT,
     NON_DETERMINISTIC,
     CloseoutCounts,
+    citations_line,
     counts,
     representative_floor,
     denominator_line,
@@ -420,9 +421,16 @@ def _opening(n: int) -> str:
 
 CONFIRMED = (
     "The one loose scorer this tool found on 0.20.0, `paws` (reported first by "
-    "caiotheodoro, #2331), was fixed upstream in v0.21.0, and this sweep confirms "
+    "caiotheodoro, #2331), was fixed upstream in v0.21.0. This sweep confirms "
     "the fix."
 )
+
+
+def _ties(K: int, more: bool) -> str:
+    return (
+        f"On {K}{' more' if more else ''}, the placeholder answer is also the most "
+        "common answer, so its score ties the baseline by construction (§8.5)."
+    )
 
 
 def test_no_real_flag_and_fewer_than_five_is_the_guides_paragraph() -> None:
@@ -431,8 +439,8 @@ def test_no_real_flag_and_fewer_than_five_is_the_guides_paragraph() -> None:
     c = _counts(floors, tasks)
     assert (c.F, c.K, c.real) == (1, 1, 0)
     assert first_line(c, floors, []) == (
-        f"{_opening(4)} None reached its majority baseline except by construction: "
-        "on 1, the placeholder answer is the modal answer (§8.5). " + CONFIRMED
+        f"{_opening(4)} None reached its majority baseline except as a tie. "
+        f"{_ties(1, more=False)} " + CONFIRMED
     )
     assert section1_sentence(c.F, c.K) == NEGATIVE
 
@@ -450,7 +458,7 @@ def test_five_ties_and_no_real_flag() -> None:
     c = _counts(floors, [f.task for f in floors])
     assert (c.F, c.K, c.real) == (5, 5, 0)
     line = first_line(c, floors, [])
-    assert "None reached its majority baseline except by construction: on 5," in line
+    assert "None reached its majority baseline except as a tie. On 5," in line
     assert line.endswith(CONFIRMED)
     assert "crossed only by ties" in section1_sentence(c.F, c.K)
 
@@ -466,13 +474,41 @@ def test_five_ties_and_two_real_flags_names_each_real_flag() -> None:
     assert (c.F, c.K, c.real) == (7, 5, 2)
     rulings = [_ruling("inspect_evals/r_two", "note", "src/r_two.py:41: scorer=includes()")]
     assert first_line(c, floors, rulings) == (
-        f"{_opening(9)} 2 reached its majority baseline other than by construction: "
-        "`inspect_evals/r_one`, where `echo` scores 61.0% against a 50.0% baseline "
-        "(unclassified); `inspect_evals/r_two`, where `all_labels` scores 100.0% "
-        "against a 55.8% baseline because src/r_two.py:41: scorer=includes(). "
-        "On 5 more, the placeholder answer is the modal answer (§8.5). " + CONFIRMED
+        f"{_opening(9)} 2 reached their majority baselines outright, not as ties. "
+        "On `inspect_evals/r_one`, `echo` scores 61.0% against a 50.0% baseline. "
+        "The cause is unclassified. On `inspect_evals/r_two`, `all_labels` scores "
+        "100.0% against a 55.8% baseline. The reason is that scorer=includes(). "
+        f"{_ties(5, more=True)} " + CONFIRMED
+    )
+    assert citations_line(c, floors, rulings) == (
+        "Lines cited in the `inspect_evals/r_two` ruling: src/r_two.py:41."
     )
     assert section1_sentence(c.F, c.K).endswith("does not hold.")
+
+
+def test_the_lead_drops_cited_asides_and_the_section_end_keeps_the_lines() -> None:
+    source = (
+        "its few-shot examples end in `ANSWER: <label>` (bbh.py:98-108) and the "
+        "scorers keep the last `ANSWER:` (_multiple_choice.py:106-115, "
+        "_util/pattern.py:1-8), so echo gives one fixed label per subset"
+    )
+    floors = [*_clean_fix(), _floor("inspect_evals/bbh", flag="echo", mean=0.262, majority=0.158)]
+    rulings = [_ruling("inspect_evals/bbh", "note", source)]
+    c = _counts(floors, [f.task for f in floors])
+    assert (c.F, c.K, c.real) == (1, 0, 1)
+    line = first_line(c, floors, rulings)
+    assert ".py:" not in line
+    assert ";" not in line
+    assert (
+        "On `inspect_evals/bbh`, `echo` scores 26.2% against a 15.8% baseline. The "
+        "reason is that its few-shot examples end in `ANSWER: <label>` and the "
+        "scorers keep the last `ANSWER:`, so echo gives one fixed label per subset. "
+    ) in line
+    assert citations_line(c, floors, rulings) == (
+        "Lines cited in the `inspect_evals/bbh` ruling: bbh.py:98-108, "
+        "_multiple_choice.py:106-115, _util/pattern.py:1-8."
+    )
+    assert citations_line(c, floors, []) == ""
 
 
 def test_one_real_flag_under_five_reads_its_cause_from_the_last_matching_note() -> None:
@@ -490,11 +526,11 @@ def test_one_real_flag_under_five_reads_its_cause_from_the_last_matching_note() 
     assert (c.F, c.K, c.real) == (1, 0, 1)
     line = first_line(c, floors, rulings)
     assert (
-        "1 reached its majority baseline other than by construction: "
-        "`inspect_evals/r`, where `refusal` scores 30.0% against a 30.0% baseline "
-        "because src/r.py:2: second."
+        "1 reached its majority baseline outright, not as a tie. "
+        "On `inspect_evals/r`, `refusal` scores 30.0% against a 30.0% baseline. "
+        "The reason is that second."
     ) in line
-    assert "the placeholder answer is the modal answer" not in line  # K == 0
+    assert "the placeholder answer is also the most common answer" not in line  # K == 0
     assert section1_sentence(c.F, c.K) == NEGATIVE
 
 
@@ -504,7 +540,7 @@ def test_a_flagged_paws_gets_no_confirmation() -> None:
     line = first_line(c, floors, [])
     assert "confirms" not in line
     assert line.endswith(
-        "was fixed upstream in v0.21.0; in this sweep `paws` is flagged, so it does "
+        "was fixed upstream in v0.21.0. In this sweep `paws` is flagged, so it does "
         "not confirm the fix."
     )
     assert not fix_confirmed(c, floors)
@@ -515,7 +551,7 @@ def test_a_missing_paws_gets_no_confirmation() -> None:
     c = _counts(floors, [BOOLQ])
     line = first_line(c, floors, [])
     assert "confirms" not in line
-    assert "in this sweep `paws` has no result, so it does not confirm the fix." in line
+    assert "In this sweep `paws` has no result, so it does not confirm the fix." in line
 
 
 def test_an_errored_or_non_deterministic_fix_task_gets_no_confirmation() -> None:
@@ -523,7 +559,7 @@ def test_an_errored_or_non_deterministic_fix_task_gets_no_confirmation() -> None
     c = _counts(floors, [PAWS, BOOLQ], nondeterministic={BOOLQ})
     line = first_line(c, floors, [])
     assert (
-        "in this sweep `paws` did not run and `boolq` did not run, so it does not "
+        "In this sweep `paws` did not run and `boolq` did not run, so it does not "
         "confirm the fix."
     ) in line
     assert c.N == 0

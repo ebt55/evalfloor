@@ -1030,10 +1030,13 @@ def test_the_closeout_readme_renders_every_branch(tmp_path) -> None:
 
     first = text.split("## The number, and its denominator\n\n", 1)[1].split("\n", 1)[0]
     assert first.startswith("I fed eight answers with no content to the real scorers of 4 ")
-    assert "1 reached its majority baseline other than by construction" in first
-    assert "because gsm8k.py:12 the answer is in the question" in first
-    assert "On 1 more, the placeholder answer is the modal answer" in first
+    assert "1 reached its majority baseline outright, not as a tie" in first
+    assert "The reason is that the answer is in the question." in first
+    assert "gsm8k.py:12" not in first
+    assert "On 1 more, the placeholder answer is also the most common answer" in first
     assert first.endswith("Preregistered negative result.")
+    section1 = _between(text, "## The number, and its denominator\n\n", "## The denominator")
+    assert section1.rstrip().endswith("Lines cited in the `inspect_evals/gsm8k` ruling: gsm8k.py:12.")
     assert "Status: closed 2026-10-14; no further sweeps." in text
     assert "Counted in samples, the most is on `gsm8k`: **20 of 100** samples" in text
     assert "already contain a label" not in text
@@ -1144,7 +1147,7 @@ def test_the_closeout_readme_on_a_clean_sweep(tmp_path) -> None:
     text = readme.read_text(encoding="utf-8")
     first = text.split("## The number, and its denominator\n\n", 1)[1].split("\n", 1)[0]
     assert "None reached its majority baseline." in first
-    assert "this sweep confirms the fix" in first
+    assert "This sweep confirms the fix" in first
     assert "Status: closed 2026-10-13; no further sweeps." in text, "a naive stamp is UTC"
     assert "Every listed task ran." in text
     assert "no reachable task is left off the list." in text

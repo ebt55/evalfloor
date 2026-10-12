@@ -6,7 +6,7 @@
 
 ## The number, and its denominator
 
-I fed eight answers with no content to the real scorers of 45 Inspect Evals tasks that run without a model, on `inspect_evals` 0.24.0. 1 reached its majority baseline other than by construction: `inspect_evals/bbh`, where `echo` scores 26.2% against a 15.8% baseline because its few-shot examples end in `ANSWER: <label>` (bbh.py:98-108) and the scorers keep the last `ANSWER:` (_multiple_choice.py:106-115, _util/pattern.py:1-8), so echo gives one fixed label per subset: a property of the task, not a loose scorer. On 10 more, the placeholder answer is the modal answer (§8.5). The one loose scorer this tool found on 0.20.0, `paws` (reported first by caiotheodoro, #2331), was fixed upstream in v0.21.0, and this sweep confirms the fix. 11 flagged under the preregistered rule, 10 of them ties; the preregistered negative result does not hold.
+I fed eight answers with no content to the real scorers of 45 Inspect Evals tasks that run without a model, on `inspect_evals` 0.24.0. 1 reached its majority baseline outright, not as a tie. On `inspect_evals/bbh`, `echo` scores 26.2% against a 15.8% baseline. The reason is that its few-shot examples end in `ANSWER: <label>` and the scorers keep the last `ANSWER:`, so echo gives one fixed label per subset: a property of the task, not a loose scorer. On 10 more, the placeholder answer is also the most common answer, so its score ties the baseline by construction (§8.5). The one loose scorer this tool found on 0.20.0, `paws` (reported first by caiotheodoro, #2331), was fixed upstream in v0.21.0. This sweep confirms the fix. 11 flagged under the preregistered rule, 10 of them ties; the preregistered negative result does not hold.
 
 <picture><source media="(prefers-color-scheme: dark)" srcset="docs/figures/f0-summary-dark.svg"><img src="docs/figures/f0-summary-light.svg" alt="One horizontal bar of the 45 countable tasks on inspect_evals 0.24.0, split by outcome: 34 healthy; 10 ties by construction (§8.5); 1 flagged: task property (bbh); 0 flagged: scorer defect, so that part of the bar is empty. A task is flagged when an answer with no content scores at least as well as always guessing the most common answer. Healthy includes chembench and macbench: the guess line itself scores 0 there, so nothing can flag."></picture>
 
@@ -89,6 +89,8 @@ The 45 countable tasks on inspect_evals 0.24.0, by outcome: 34 healthy; 10 ties 
 Status: closed 2026-10-10; no further sweeps.
 
 Echoing the question back scores above zero on **5 of 45** tasks swept. Counted in samples, the most is on `mmlu_5_shot`: **3,374 of 14,015** samples score as correct when their own input is handed back as the answer, against a 26.9% `majority` baseline. Whatever the scorer credits there was in the question.
+
+Lines cited in the `inspect_evals/bbh` ruling: bbh.py:98-108, _multiple_choice.py:106-115, _util/pattern.py:1-8.
 
 ## The denominator
 
